@@ -1,0 +1,11 @@
+# CIPHER Phase 1 — Windows-executable dependencies
+# Versions pinned once each module is implemented and tested against them.
+
+flask
+scapy
+scikit-learn
+joblib
+dilithium-py
+reportlab
+python-dotenv
+pytest
