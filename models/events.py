@@ -1,9 +1,16 @@
-"""DetectionEvent and RiskEvent — the two records that flow through pipeline/.
+"""Superseded — see docs/SDD.md Step 4 addendum.
 
-Implemented in a later step. See docs/SDD.md Section 8 for intended shape:
-- DetectionEvent: device, tls_version, key_size, pfs, entropy, port_risk,
-  protocol_flag, timestamp
-- RiskEvent: detection, risk_score, category, remediation, nist_reference
+The original SDD draft planned a DetectionEvent/RiskEvent pair here.
+Step 4's architecture freeze replaced that with a more granular set of
+models matching the frozen pipeline (Packet -> Fingerprint -> Entropy
+-> Device Features -> Risk Assessment / Anomaly Assessment -> Device
+Assessment):
+
+    PacketMetadata, ProtocolFingerprint, EntropyMetrics,
+    DeviceFeatures, RiskAssessment, AnomalyAssessment, DeviceAssessment
+
+This file is kept (rather than deleted) purely as a pointer for anyone
+who goes looking for the models the original SDD text described.
+Nothing imports from this module; it is not re-exported by
+models/__init__.py.
 """
-
-# TODO: implement DetectionEvent, RiskEvent dataclasses (Step: models)

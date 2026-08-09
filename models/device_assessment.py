@@ -1,0 +1,53 @@
+"""DeviceAssessment — the final, fused, API-facing per-device result.
+
+This is the only assessment object dashboard/, reports/, and the REST
+API are meant to consume (see the frozen frontend contract in
+docs/SDD.md: the API exposes only stable, fused results — never raw
+RiskAssessment/AnomalyAssessment internals or ML objects directly).
+The actual fusion logic (how risk_assessment and anomaly_assessment
+combine into final_category) is not implemented in this step — it
+belongs to a future risk-fusion component, not to this model.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict
+
+from models.anomaly_assessment import AnomalyAssessment
+from models.device import Device
+from models.enums import RiskCategory
+from models.risk_assessment import RiskAssessment
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceAssessment:
+    """The fused final assessment for one device.
+
+    No additional validation beyond composing already-validated parts.
+    """
+
+    device: Device
+    risk_assessment: RiskAssessment
+    anomaly_assessment: AnomalyAssessment
+    final_category: RiskCategory
+    assessed_at: datetime
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "device": self.device.to_dict(),
+            "risk_assessment": self.risk_assessment.to_dict(),
+            "anomaly_assessment": self.anomaly_assessment.to_dict(),
+            "final_category": self.final_category.value,
+            "assessed_at": self.assessed_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DeviceAssessment":
+        return cls(
+            device=Device.from_dict(data["device"]),
+            risk_assessment=RiskAssessment.from_dict(data["risk_assessment"]),
+            anomaly_assessment=AnomalyAssessment.from_dict(data["anomaly_assessment"]),
+            final_category=RiskCategory(data["final_category"]),
+            assessed_at=datetime.fromisoformat(data["assessed_at"]),
+        )
