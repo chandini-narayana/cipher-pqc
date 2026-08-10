@@ -6,14 +6,18 @@ hands them to pipeline.runner.Pipeline and dashboard.app.create_app. It
 contains no orchestration logic itself (see docs/SDD.md D3) — that lives
 in pipeline/.
 
-CURRENT STATE (Step 3 — Configuration module):
-Configuration and logging are real and load_settings()/configure_logging()
-are actually wired in. capture/, risk/, ml/, signing/, reports/, pipeline/,
-and dashboard/ are not implemented yet, so there is nothing yet to run a
-detection pipeline against. Rather than fake a working capture pipeline
-or crash, this prints a startup banner from real configuration and exits
-gracefully (exit code 0) once it has confirmed there is no implemented
-capture source to run — exactly the behavior specified for this step.
+CURRENT STATE (Step 5 — Packet Parsing / capture):
+Configuration and logging are real (Step 3). capture/ is now fully
+implemented for offline .pcap replay, with live capture as a
+documented scaffold (Step 5). risk/, ml/, signing/, reports/, and
+dashboard/ are not implemented yet, and — per D3 — orchestrating a
+capture source into a running pipeline is pipeline/'s job, not
+main.py's; pipeline/ does not exist yet either. Rather than have this
+composition root reach into capture/ directly and start improvising
+orchestration logic (which D3 exists specifically to prevent), main.py
+still prints a startup banner from real configuration and exits
+gracefully (exit code 0), now correctly noting that a capture source
+exists but nothing yet drives it.
 """
 from __future__ import annotations
 
@@ -44,7 +48,7 @@ def _render_banner(settings) -> str:
 
 def main() -> int:
     """Load configuration, configure logging, print the startup banner,
-    and exit gracefully since no capture source is implemented yet.
+    and exit gracefully since no pipeline exists yet to drive capture.
 
     Returns the process exit code (0 = clean exit, including the
     "nothing to run yet" case — this is expected Phase 1 behavior at
@@ -61,17 +65,19 @@ def main() -> int:
         "Logging initialized at %s, writing to %s", settings.log_level, settings.log_dir
     )
 
-    # capture/, pipeline/, and dashboard/ are not implemented yet (see
-    # docs/SDD.md for the build order). Rather than raise or simulate a
-    # working pipeline, we detect that state explicitly and exit
-    # gracefully so `python main.py` is always a clean, honest run.
+    # capture/ is implemented (Step 5), but pipeline/ — the only thing
+    # allowed to actually drive a capture source through the detection
+    # sequence, per D3 — is not built yet. Rather than have this
+    # composition root improvise orchestration, we detect that state
+    # explicitly and exit gracefully so `python main.py` stays a clean,
+    # honest run.
     logger.warning(
-        "No capture source is implemented yet (capture/ and pipeline/ "
-        "arrive in later steps). Exiting gracefully."
+        "Capture source is implemented, but no pipeline exists yet to "
+        "run it (pipeline/ arrives in a later step). Exiting gracefully."
     )
     print(
-        "No capture source implemented yet — exiting gracefully.\n"
-        "See docs/SDD.md for the build plan."
+        "Capture is implemented, but no pipeline exists yet to run it "
+        "— exiting gracefully.\nSee docs/SDD.md for the build plan."
     )
     return 0
 
