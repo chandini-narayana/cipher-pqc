@@ -85,7 +85,7 @@ cipher/
 │
 ├── entropy/
 │   ├── __init__.py
-│   └── engine.py                  # EntropyEngine.shannon(payload) -> float
+│   └── engine.py                  # shannon_entropy(data) -> float; compute_entropy_metrics(payload) -> EntropyMetrics
 │
 ├── fingerprint/
 │   ├── __init__.py
@@ -182,7 +182,7 @@ cipher/
                            │
              ┌─────────────┴──────────────┐
              ▼                             ▼
-      EntropyEngine.shannon()      TLSFingerprinter.extract()
+      shannon_entropy()      TLSFingerprinter.extract()
              │                             │
              └─────────────┬───────────────┘
                             ▼
@@ -311,8 +311,9 @@ class LiveCaptureSource(CaptureSource):         # documented scaffold (D2)
     + read_packets() -> Iterator[PacketRecord]   # raises NotImplementedError
 
 # --- entropy/, fingerprint/ ---
-class EntropyEngine:
-    + shannon(payload: bytes) -> float           # pure
+# entropy/ is plain functions, not a class (Step 6) — see Section 18.
+def shannon_entropy(data: bytes) -> float: ...            # pure
+def compute_entropy_metrics(payload: bytes) -> EntropyMetrics: ...
 
 class TLSFingerprinter:
     + extract(packet: PacketRecord) -> TLSInfo   # pure
@@ -474,6 +475,18 @@ No Raspberry Pi-specific code exists in Phase 1. The following Phase 1 choices w
 - **Event-driven capture, not polling:** both `OfflinePcapSource` and (once implemented) `LiveCaptureSource` are iterator/callback-driven via scapy, not a sleep-and-poll loop.
 
 None of this changes Phase 1's Windows behavior or adds complexity — it's simply choosing the version of "normal good Python" that also happens to travel well.
+
+---
+
+## 17. Step 6 Addendum — Entropy Module
+
+**Status:** Steps 5 (capture/) and 6 (entropy/) complete and verified.
+
+`entropy/engine.py` is plain module-level functions (`shannon_entropy(data: bytes) -> float`, `compute_entropy_metrics(payload: bytes) -> EntropyMetrics`), not the `EntropyEngine` class the original Section 4/5/8 diagrams sketched. The calculation is pure and stateless — no configuration, nothing to hold between calls — so a class wrapper would be an abstraction with nothing to abstract. Sections 4, 5, and 8 above have been corrected to match; this is the only change those sections needed.
+
+**Model decision (no change made):** `models.EntropyMetrics` (Step 4) already rejects `sample_size <= 0`. This is correct, not a gap — `capture.RawPacket` (Step 5) already guarantees a non-empty payload before entropy/ ever sees one, so an empty-payload `EntropyMetrics` should never legitimately be constructed. The "empty payload → 0.0" requirement belongs to `shannon_entropy()` itself (a pure calculation, independent of the domain model), not to `EntropyMetrics`. `compute_entropy_metrics(b"")` correctly raises `ValueError`, propagated from the unmodified Step 4 model.
+
+**New capture-layer type used, not modified:** `entropy/` consumes `capture.RawPacket.payload` (added in Step 5 specifically so `models.PacketMetadata` could stay payload-free) — no changes to either was needed for this step.
 
 ---
 
