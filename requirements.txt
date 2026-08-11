@@ -6,6 +6,7 @@ scapy
 scikit-learn
 joblib
 dilithium-py
+cryptography
 reportlab
 python-dotenv
 pytest

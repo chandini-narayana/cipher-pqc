@@ -182,7 +182,7 @@ cipher/
                            │
              ┌─────────────┴──────────────┐
              ▼                             ▼
-      shannon_entropy()      TLSFingerprinter.extract()
+      shannon_entropy()      fingerprint_packet()
              │                             │
              └─────────────┬───────────────┘
                             ▼
@@ -315,8 +315,11 @@ class LiveCaptureSource(CaptureSource):         # documented scaffold (D2)
 def shannon_entropy(data: bytes) -> float: ...            # pure
 def compute_entropy_metrics(payload: bytes) -> EntropyMetrics: ...
 
-class TLSFingerprinter:
-    + extract(packet: PacketRecord) -> TLSInfo   # pure
+# fingerprint/ is plain functions, not a class (Step 7) — see Section 19.
+    +def detect_protocol_type(payload: bytes) -> ProtocolType: ...
+    +def detect_tls_version(payload: bytes) -> Optional[TLSVersion]: ...
+    +def extract_rsa_key_size(payload: bytes) -> Optional[int]: ...
+    +def fingerprint_packet(payload: bytes) -> ProtocolFingerprint: ...
 
 # --- risk/, ml/ ---
 class RiskEngine:
