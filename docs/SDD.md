@@ -189,8 +189,8 @@ cipher/
                     DetectionEvent (models/)
                             │
                             ▼
-                  RiskEngine.evaluate(event)
-              → risk_score + remediation text
+                  evaluate_risk(features, port_risk)
+               → risk_score + remediation text
                             │
                             ▼
                 MLClassifier.predict(features)
@@ -322,8 +322,10 @@ def compute_entropy_metrics(payload: bytes) -> EntropyMetrics: ...
     +def fingerprint_packet(payload: bytes) -> ProtocolFingerprint: ...
 
 # --- risk/, ml/ ---
-class RiskEngine:
-    + evaluate(event: DetectionEvent) -> RiskEvent
+# risk/ is plain functions, not a class (Step 8) — see Section 20.
++def quantum_risk_score(tls_version, key_size, pfs, entropy, port_risk) -> int: ...
++def category_for_score(score: int) -> RiskCategory: ...
++def evaluate_risk(features: DeviceFeatures, port_risk: int) -> RiskAssessment: ...
 
 class MLClassifier:
     - model: DecisionTreeClassifier | None
