@@ -10,3 +10,4 @@ cryptography
 reportlab
 python-dotenv
 pytest
+numpy

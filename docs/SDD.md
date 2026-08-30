@@ -327,10 +327,14 @@ def compute_entropy_metrics(payload: bytes) -> EntropyMetrics: ...
 +def category_for_score(score: int) -> RiskCategory: ...
 +def evaluate_risk(features: DeviceFeatures, port_risk: int) -> RiskAssessment: ...
 
-class MLClassifier:
-    - model: DecisionTreeClassifier | None
-    + predict(event: DetectionEvent) -> RiskCategory   # falls back per D4 if model is None
-    + train(dataset) -> None
+# ml/ Step 9: Isolation Forest, not Decision Tree. AnomalyDetector
+# remains a class (unlike entropy/, fingerprint/, risk/) since it is
+# genuinely stateful — see Section 21.
+class AnomalyDetector:
+    - model: IsolationForest
+    - score_std: float
+    + fit(feature_matrix: np.ndarray) -> None
+    + predict_one(features: DeviceFeatures) -> AnomalyAssessment
     + save(path) / load(path)
 
 # --- signing/ ---
@@ -495,6 +499,24 @@ None of this changes Phase 1's Windows behavior or adds complexity — it's simp
 
 ---
 
+
+## 18. Step 9 Addendum — Isolation Forest Anomaly Detection
+
+**Status:** Step 9 (ml/) complete and verified.
+
+`ml/classifier.py`'s `AnomalyDetector` replaces the draft's `MLClassifier`/`DecisionTreeClassifier` sketch (Section 8). Unlike entropy/, fingerprint/, and risk/ (all plain functions per Sections 18-20), this is a class: Isolation Forest is genuinely stateful, and a fitted model's learned structure must persist across `fit()` and `predict_one()` calls and be saved/loaded as a unit.
+
+**Feature schema:** 12 columns, fixed order in `ml.features.FEATURE_NAMES` — raw entropy, packet size, TLS version (reusing `TLSVersion`'s own numeric value) with an observed-indicator, key size with an observed-indicator, forward secrecy, and one-hot protocol type. No Quantum Risk Score or risk/ output is ever used as a feature (enforced by a static-analysis test) — Isolation Forest and the rule engine consume the same raw inputs independently, per the approved "no risk-score leakage" requirement.
+
+**Contamination = 0.05**, chosen after testing: sklearn's `"auto"` mode flagged ~46% of representative synthetic data as anomalous on inspection — clearly unsuitable. `0.05` caught all 10 injected synthetic outliers with zero false positives on the same data. This is a starting engineering default, not a value validated against real traffic.
+
+**`random_state = 42`**, fixed for reproducibility, exposed as a constructor parameter.
+
+**Anomaly score is sign-flipped from sklearn's native convention** (`decision_function` returns high=normal, low=anomalous; `AnomalyAssessment.anomaly_score` is negated so high=anomalous, matching the field's name). **`confidence` is a sigmoid of `anomaly_score`, scaled by the training-time score standard deviation** (adaptive, not a fixed constant) — explicitly not a calibrated probability.
+
+**Persistence:** minimal `joblib.dump`/`load` of the whole `AnomalyDetector`, no registry or versioning.
+
+**Not implemented:** Risk Fusion, pipeline integration, REST API, frontend, any ML algorithm besides Isolation Forest.
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML rule-based fallback retained) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.
