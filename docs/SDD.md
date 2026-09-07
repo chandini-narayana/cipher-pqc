@@ -516,7 +516,7 @@ None of this changes Phase 1's Windows behavior or adds complexity — it's simp
 
 **Persistence:** minimal `joblib.dump`/`load` of the whole `AnomalyDetector`, no registry or versioning.
 
-**Not implemented:** Risk Fusion, pipeline integration, REST API, frontend, any ML algorithm besides Isolation Forest.
+**Not implemented at the time of this step:** Risk Fusion (now implemented — see Section 19), pipeline integration, REST API, frontend, any ML algorithm besides Isolation Forest.
 
 ---
 
@@ -548,6 +548,44 @@ if anomaly_assessment is not None and anomaly_assessment.is_anomaly:
 **Dependency boundary:** fusion/ imports only `models.*` — never `risk/` or `ml/` directly (enforced by a static-analysis test, same precedent as ml/features.py's "no risk-score leakage" check). It fuses already-computed outputs; it does not invoke either engine.
 
 **Not implemented:** pipeline integration, REST API, frontend, report generation, signing.
+
+---
+
+## 20. Step 11 Addendum — Single-Observation Assessment Pipeline
+
+**Status:** Step 11 (pipeline/assessment_pipeline.py) complete and verified.
+
+`pipeline/assessment_pipeline.py`'s `assess_packet()` composes the already-implemented per-stage modules (entropy/, fingerprint/, risk/, ml/, fusion/) into one deterministic sequence for a single captured packet. It is a small, stateless, plain function — no thread, no loop, no registry — and contains no entropy, fingerprinting, scoring, ML, or fusion logic of its own; it only wires their existing public entry points together.
+
+**Exact orchestration sequence:**
+
+```
+RawPacket.payload  -> compute_entropy_metrics()  -> EntropyMetrics
+RawPacket.payload  -> fingerprint_packet()        -> ProtocolFingerprint
+RawPacket.to_metadata()                           -> PacketMetadata
+Device + PacketMetadata + ProtocolFingerprint + EntropyMetrics
+                                                   -> DeviceFeatures
+DeviceFeatures + port_risk  -> evaluate_risk()    -> RiskAssessment
+DeviceFeatures  -> anomaly_detector.predict_one()  -> AnomalyAssessment | None
+RiskAssessment + AnomalyAssessment(?) + Device + assessed_at
+                                    -> fuse_assessments() -> DeviceAssessment
+```
+
+Exactly one `DeviceFeatures` instance is built per call and reused for both `evaluate_risk()` and `anomaly_detector.predict_one()` — it is never reconstructed between stages, and its schema (`device`, `packet`, `fingerprint`, `entropy`) carries no risk-score-derived field, so there is no channel for QRS output to leak into the ML feature vector (same "no risk-score leakage" property ml/features.py already guarantees at the vectorization level — see Section 18).
+
+**`Device` and `port_risk` remain external, deliberately.** Neither is derived inside this step:
+- **Device identity** — nothing in the codebase defines whether a packet's `src_ip` or `dst_ip` identifies "the device," and `DeviceRegistry` (utils/registry.py) — the component that would own device lifecycle/identity across observations — is not implemented yet. `assess_packet()` takes an already-identified `Device` as a required argument rather than guessing.
+- **`port_risk`** — no approved HTTP/MQTT/Telnet-to-port-risk mapping exists (see risk/scoring.py's own docstring on `quantum_risk_score()`). `assess_packet()` takes `port_risk` as a required external argument, exactly as `risk.evaluate_risk()` already does — it is not derived from `ProtocolFingerprint.protocol`.
+
+**The anomaly detector is dependency-injected and optional, never acquired internally.** `assess_packet(..., anomaly_detector=None)` skips the ML stage entirely and passes `anomaly_assessment=None` straight to `fuse_assessments()`, which already defines that exact pass-through behavior (Section 19). This step does not instantiate, fit, load, or save an `AnomalyDetector`, and never calls `ml/dataset.py`'s synthetic data generator — there is no fallback ML behavior of any kind. A caller who has a fitted detector supplies it; a caller who doesn't, doesn't, and ML is simply unavailable for that observation.
+
+**Known open runtime/model-loading issue (not resolved in this step):** `config/constants.py`'s `DEFAULT_MODEL_PATH` (`ml/artifacts/risk_classifier.pkl`) does not match what `ml/train.py` actually produces (`ml/artifacts/anomaly_detector.joblib`, via `joblib`, not a `.pkl`). No trained model artifact is currently committed to the repository. Because `assess_packet()` never loads a model itself, this mismatch has no effect on Step 11 — but it means there is still no working configuration path from `Settings.model_path` to a real, loadable `AnomalyDetector`. Resolving this (config, format, and an acquisition policy) is left to a later, explicitly-scoped step.
+
+**No aggregation or registry.** `assess_packet()` handles exactly one packet observation for exactly one already-identified device per call; it holds no state across calls and introduces no per-device or per-packet accumulation. `pipeline.runner.Pipeline` (still an unimplemented stub) remains reserved for the later runtime driver that will iterate a `CaptureSource` in a loop, own `DeviceRegistry`, and call `assess_packet()` once per packet.
+
+**`assessed_at` is assessment execution time, not packet observation time.** The packet's own capture time is already represented by `PacketMetadata.timestamp` (via `DeviceFeatures.timestamp`). `assess_packet()` passes `assessed_at` straight through to `fuse_assessments()` unchanged — defaulting to the current UTC time when omitted (Section 19's existing default) — and never substitutes `RawPacket.timestamp` for it. An explicit `assessed_at` argument exists for deterministic tests and replay scenarios.
+
+**Not implemented:** `pipeline.runner.Pipeline` (the background-thread capture loop), `DeviceRegistry`, REST API, frontend, report generation, signing, model acquisition policy.
 
 ---
 
