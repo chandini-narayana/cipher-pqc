@@ -1,32 +1,32 @@
 """main.py — CIPHER Phase 1 composition root.
 
-At full implementation, this constructs a capture source, RiskEngine,
-MLClassifier, DilithiumSigner, ReportGenerator, and DeviceRegistry, then
-hands them to pipeline.runner.Pipeline and dashboard.app.create_app. It
-contains no orchestration logic itself (see docs/SDD.md D3) — that lives
-in pipeline/.
+Loads configuration, configures logging, builds a CaptureSource, loads
+the optional anomaly detector and the signing keypair once each, hands
+them to pipeline.runner.run_capture for one synchronous offline pass,
+and logs a concise completion summary. No orchestration logic lives
+here (see docs/SDD.md D3) — that lives in pipeline/.
 
-CURRENT STATE (Step 5 — Packet Parsing / capture):
-Configuration and logging are real (Step 3). capture/ is now fully
-implemented for offline .pcap replay, with live capture as a
-documented scaffold (Step 5). risk/, ml/, signing/, reports/, and
-dashboard/ are not implemented yet, and — per D3 — orchestrating a
-capture source into a running pipeline is pipeline/'s job, not
-main.py's; pipeline/ does not exist yet either. Rather than have this
-composition root reach into capture/ directly and start improvising
-orchestration logic (which D3 exists specifically to prevent), main.py
-still prints a startup banner from real configuration and exits
-gracefully (exit code 0), now correctly noting that a capture source
-exists but nothing yet drives it.
+CURRENT STATE (Phase 11 — Backend Runtime Orchestration):
+capture/, entropy/, fingerprint/, risk/, ml/, fusion/, signing/, and
+reports/ are all implemented; pipeline.runner.run_capture wires them
+into one offline run. REST, the dashboard, and live capture remain
+unimplemented — CAPTURE_MODE=mock and CAPTURE_MODE=live both fail
+clearly and explicitly rather than silently doing nothing (see
+docs/SDD.md's Phase 11 addendum).
 """
 from __future__ import annotations
 
 import logging
 import sys
 
-from config.settings import load_settings
-from utils.logging_setup import configure_logging
+from capture.factory import get_capture_source
 from config.constants import APP_NAME, APP_PHASE, APP_TAGLINE, APP_VERSION
+from config.settings import load_settings
+from ml.loading import load_anomaly_detector
+from pipeline.runner import run_capture
+from signing import load_or_create_keypair
+from utils.exceptions import CipherError
+from utils.logging_setup import configure_logging
 
 
 def _render_banner(settings) -> str:
@@ -47,12 +47,13 @@ def _render_banner(settings) -> str:
 
 
 def main() -> int:
-    """Load configuration, configure logging, print the startup banner,
-    and exit gracefully since no pipeline exists yet to drive capture.
+    """Load configuration, configure logging, and run one synchronous
+    offline capture pass to completion.
 
-    Returns the process exit code (0 = clean exit, including the
-    "nothing to run yet" case — this is expected Phase 1 behavior at
-    this step, not a failure).
+    Returns the process exit code: 0 for a successful offline
+    completion (including CAPTURE_MODE=mock, which has no runtime
+    pipeline in Phase 1 and exits gracefully rather than attempting
+    one), non-zero if capture_mode is misconfigured or unrecognized.
     """
     settings = load_settings()
     configure_logging(settings)
@@ -65,19 +66,35 @@ def main() -> int:
         "Logging initialized at %s, writing to %s", settings.log_level, settings.log_dir
     )
 
-    # capture/ is implemented (Step 5), but pipeline/ — the only thing
-    # allowed to actually drive a capture source through the detection
-    # sequence, per D3 — is not built yet. Rather than have this
-    # composition root improvise orchestration, we detect that state
-    # explicitly and exit gracefully so `python main.py` stays a clean,
-    # honest run.
-    logger.warning(
-        "Capture source is implemented, but no pipeline exists yet to "
-        "run it (pipeline/ arrives in a later step). Exiting gracefully."
+    if settings.capture_mode.lower() == "mock":
+        # mock mode has no CaptureSource (capture/factory.py) and is
+        # meant to be served by dashboard/, which doesn't exist in
+        # Phase 1 — nothing to run, so exit gracefully rather than
+        # raising the CaptureError get_capture_source would give it.
+        logger.info("capture_mode 'mock' has no runtime pipeline in Phase 1 (no dashboard yet).")
+        print("capture_mode 'mock' has no runtime pipeline in Phase 1 — exiting gracefully.")
+        return 0
+
+    try:
+        capture_source = get_capture_source(settings)
+        anomaly_detector = load_anomaly_detector(settings.model_path)
+        public_key, secret_key = load_or_create_keypair(settings.signing_key_path)
+
+        assessments, report_paths = run_capture(
+            capture_source, anomaly_detector, public_key, secret_key
+        )
+    except CipherError:
+        logger.error("Capture run failed.", exc_info=True)
+        return 1
+
+    logger.info(
+        "Capture run complete: %d device(s) assessed, %d report(s) generated.",
+        len(assessments),
+        len(report_paths),
     )
     print(
-        "Capture is implemented, but no pipeline exists yet to run it "
-        "— exiting gracefully.\nSee docs/SDD.md for the build plan."
+        f"Capture run complete: {len(assessments)} device(s) assessed, "
+        f"{len(report_paths)} report(s) generated."
     )
     return 0
 

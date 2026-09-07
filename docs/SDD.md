@@ -711,6 +711,34 @@ Every value needed for Page 3 (`report_hash`, `signature_hex`, `signing_algorith
 
 ---
 
+## 25. Phase 11 Addendum — Backend Runtime Orchestration
+
+**Status:** Phase 11 (`pipeline/runner.py`, `main.py`) complete and verified.
+
+**`pipeline.runner.run_capture(capture_source, anomaly_detector, public_key, secret_key, report_output_dir=DEFAULT_REPORT_OUTPUT_DIR)`** is the synchronous, single-pass offline orchestrator: it drives every already-implemented stage (entropy, fingerprint, port-risk, QRS, optional Isolation Forest, fusion, signing, PDF generation) through one full pass over a `CaptureSource`, with no new algorithm of its own. It returns `Tuple[List[DeviceAssessment], List[Path]]` — the retained per-device assessments and the paths of every PDF actually written — deliberately not a new `RunSummary` domain model, per the "prefer existing types" instruction for this phase.
+
+**Phase-1 device-identity convention (frozen, explicitly NOT specified by the Execution Report):** the observed device is identified by `RawPacket.src_ip`. This is a Phase-1 implementation convention, sufficient for deterministic offline-`.pcap` execution, chosen because the Execution Report does not specify src_ip vs. dst_ip device identity and no other convention exists anywhere in this repository. A future deployment may use network-position, subnet, or MAC-aware identification instead — none of that (subnet inference, MAC discovery, src/dst heuristics, vendor lookup, network-direction analysis) is implemented here.
+
+**Device lifecycle is local, in-run state only — not `DeviceRegistry`.** `run_capture` holds a plain `Dict[str, Device]` for the duration of one call: first contact for an IP calls `Device.first_contact(src_ip, packet.timestamp)`; a later packet from the same IP advances `last_seen` only if its timestamp is strictly later, via the existing `Device.with_last_seen()` (which already preserves `first_seen` unchanged); an out-of-order (earlier-timestamped) packet never moves `last_seen` backwards. `utils/registry.py`'s `DeviceRegistry` remains an unimplemented stub — nothing in Phase 11 needed its thread-safety, cross-request query API, or bounded-history semantics.
+
+**Representative-assessment selection (frozen runtime policy — does not change QRS, Isolation Forest, or Risk Fusion):** exactly one `DeviceAssessment` is retained per device across the whole run. A new observation replaces the retained one only if: (1) its `final_category` outranks the retained one (`HIGH > MEDIUM > LOW`); or, on a category tie, (2) its `risk_assessment.risk_score` is higher; or, on both ties, (3) its `assessed_at` is later. This guarantees exactly one PDF per flagged device even when a device appears in many packets across a `.pcap` file, without altering any risk computation.
+
+**Port risk:** unchanged from Step 12B. Because `assess_packet()` requires `port_risk` as an already-resolved `int` before it performs its own internal fingerprinting, `run_capture` calls `fingerprint_packet(raw_packet.payload)` itself first to get `.protocol` for `port_risk_for_protocol()`, then calls `assess_packet()`, which fingerprints the same payload again internally. This is accepted, deterministic, side-effect-free duplication — `assess_packet()` was not changed merely to optimize it away.
+
+**ML and signing are loaded exactly once, by the caller, and injected — never acquired inside the per-packet loop.** `main.py` calls `ml.loading.load_anomaly_detector(settings.model_path)` once (fail-open: `None` on a missing artifact, exactly as Step 12A already defined) and `signing.load_or_create_keypair(settings.signing_key_path)` once, then passes the resulting `Optional[AnomalyDetector]` and `(public_key, secret_key)` into `run_capture`. `run_capture` itself never imports `ml.loading` or `signing.key_store` — it only calls `assess_packet()` (which accepts an already-built detector) and `generate_report()` (which accepts already-resolved key bytes).
+
+**Reporting:** `is_flagged_device()` is evaluated once per retained representative, after EOF — never per-packet. Every flagged (`final_category != LOW`) device gets exactly one `generate_report()` call; LOW devices get none.
+
+**Fault isolation, no retry framework:** each packet's `fingerprint → port_risk → assess_packet` sequence, and each device's `generate_report()` call, is wrapped in its own `try/except Exception` — logged at `ERROR` with identifying context, then the run continues. `KeyboardInterrupt`/`SystemExit` are never caught (only `Exception` is) and always propagate. A missing ML artifact is not a per-packet error at all — it was already resolved to `None` before `run_capture` was ever called.
+
+**No threading.** The pre-existing `runner.py` stub's `start()`/`stop()` background-thread design was written for a world where a live NIC capture runs indefinitely alongside a simultaneously-running dashboard — neither exists in Phase 11's scope. Offline mode processes the whole file once, synchronously, to a deterministic final state, then returns; that stale docstring has been replaced.
+
+**`main.py` is finally wired**, exactly per D3 (composition root, no orchestration logic of its own): load `Settings` → configure logging → (if `CAPTURE_MODE=mock`, log and exit 0 immediately — mock mode has no `CaptureSource` and is meant for a dashboard that doesn't exist yet in Phase 1, so it is not attempted) → `capture.factory.get_capture_source(settings)` → `ml.loading.load_anomaly_detector(settings.model_path)` → `signing.load_or_create_keypair(settings.signing_key_path)` → `pipeline.runner.run_capture(...)` → log a concise completion summary (`N device(s) assessed, M report(s) generated`) → exit 0. Any `CipherError` raised during this sequence (including `CaptureError` for a bad/missing `.pcap` file, and `LiveCaptureNotImplementedError` for `CAPTURE_MODE=live`, which surfaces the moment `run_capture` calls `read_packets()`) is logged at `ERROR` and exits 1 — `CAPTURE_MODE=live` still fails loudly and immediately, exactly as D2 always specified; live capture itself remains unimplemented.
+
+**Not implemented:** REST, frontend, dashboard, `DeviceRegistry`, isolation/remediation, Raspberry Pi behavior, live capture, any new ML/scoring algorithm.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

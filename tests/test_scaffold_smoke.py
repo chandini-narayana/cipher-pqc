@@ -10,6 +10,7 @@ tests stay in place alongside the module's own real unit tests — they
 are cheap insurance that the overall project never silently breaks.
 """
 import importlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +33,8 @@ PACKAGES = [
 ]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+MAIN_PY = REPO_ROOT / "main.py"
+SAMPLE_PCAP = REPO_ROOT / "tests" / "fixtures" / "sample.pcap"
 
 
 @pytest.mark.parametrize("package_name", PACKAGES)
@@ -42,14 +45,23 @@ def test_package_imports_cleanly(package_name: str) -> None:
     assert module is not None
 
 
-def test_main_runs_and_exits_zero() -> None:
-    """python main.py must always execute successfully (project rule 3)."""
+def test_main_runs_and_exits_zero(tmp_path) -> None:
+    """python main.py must always execute successfully (project rule 3).
+
+    Run with cwd=tmp_path (PCAP_PATH pointed at the real committed
+    fixture via an absolute path) so this never touches this checkout's
+    real data/, logs/, or data/keys/ — see tests/test_main_step3.py.
+    """
+    env = os.environ.copy()
+    env["PCAP_PATH"] = str(SAMPLE_PCAP)
+
     result = subprocess.run(
-        [sys.executable, "main.py"],
-        cwd=REPO_ROOT,
+        [sys.executable, str(MAIN_PY)],
+        cwd=tmp_path,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=30,
+        env=env,
     )
     assert result.returncode == 0
     assert "CIPHER" in result.stdout
