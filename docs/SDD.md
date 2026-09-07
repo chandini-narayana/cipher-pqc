@@ -739,6 +739,73 @@ Every value needed for Page 3 (`report_hash`, `signature_hex`, `signing_algorith
 
 ---
 
+## 26. Phase 12 Addendum — REST API Contracts
+
+**Status:** Phase 12 (`dashboard/`, `run_api.py`) complete and verified. This section is the frontend contract — a teammate building the UI independently should be able to implement against it without reading any Python.
+
+**Separate entrypoint, `main.py` unchanged in contract.** `run_api.py` is a second composition root alongside `main.py`, not a replacement: `main.py`'s "load, run one offline capture pass, exit" behavior (relied on by existing tests since Step 3) is untouched. `run_api.py` performs the identical one-shot composition (Settings → logging → `CaptureSource` → optional `AnomalyDetector` → signing keypair → `run_capture()`), then — instead of exiting — builds an `ApplicationState` from the results and calls `dashboard.create_app(state, settings).run(...)`, blocking until interrupted. `CAPTURE_MODE=mock` exits gracefully before attempting either (no `CaptureSource` exists for it); `CAPTURE_MODE=live` still fails loudly via the same `CipherError` path as `main.py`.
+
+**Small, targeted `pipeline.runner.run_capture()` change:** its second return value is now `List[Tuple[Path, ReportMetadata]]` (was `List[Path]`) — the `ReportMetadata` that Phase 11 discarded (`path, _metadata = generate_report(...)`) is retained, because Phase 12 genuinely needs it to answer `/api/devices/<ip>/report`. No scoring, ML, signing, fusion, or orchestration behavior changed — this is a return-shape addition only, updated in `main.py` (variable rename, `len()` still works identically) and in Phase 11's own test suite.
+
+**`dashboard.state.ApplicationState`** is the entire runtime data source — an immutable snapshot built once (`build_application_state(assessments, reports)`) from `run_capture()`'s exact return shape, holding only `Dict[str, DeviceAssessment]` and `Dict[str, Tuple[Path, ReportMetadata]]`, both keyed by device IP. No database, no `DeviceRegistry`, no persistence. Every route resolves a device through a plain dict lookup on this state — **never** by constructing a filesystem path from a request parameter. An unknown IP is simply absent from both dicts, so it 404s before any filesystem code runs; the trusted `Path` object served by the download route always originates from `ApplicationState`, never from the URL.
+
+**Frozen REST contract** (all under Flask, no FastAPI, no `flask-cors`):
+
+| Method & path | Returns |
+|---|---|
+| `GET /api/health` | `{"status": "ok", "app_name": str, "app_version": str, "capture_mode": str, "devices_assessed": int, "reports_generated": int}` — all real, from `config.constants`/`Settings`/`ApplicationState` counts, nothing fabricated. |
+| `GET /api/devices` | `{"devices": [<device summary>, ...]}`, ordered deterministically by `device_ip` (a plain string sort — not IP-octet-numeric — see the code for the exact ordering). |
+| `GET /api/devices/<ip>` | A device detail object (summary + `remediation` + `nist_reference`); `404` for an unknown IP. |
+| `GET /api/devices/<ip>/report` | The report metadata object; `404` if the IP is unknown *or* if that device has no report (e.g., it was never flagged). |
+| `GET /api/devices/<ip>/report/download` | The raw PDF, `Content-Type: application/pdf`; same `404` cases as above. |
+
+**Device summary DTO** (`dashboard/serializers.py::serialize_device_summary`):
+```json
+{
+  "device_ip": "192.168.1.10",
+  "first_seen": "2026-01-01T12:00:00+00:00",
+  "last_seen": "2026-01-01T12:00:00+00:00",
+  "final_category": "HIGH",
+  "risk_score": 9,
+  "risk_category": "HIGH",
+  "anomaly": null,
+  "assessed_at": "2026-01-01T12:00:00+00:00",
+  "has_report": true
+}
+```
+`anomaly` is `null` when `DeviceAssessment.anomaly_assessment is None` (ML did not run for that device — not an error, not "0 risk"), otherwise `{"is_anomaly": bool, "anomaly_score": float, "confidence": float}`. Device detail is this object plus `"remediation"` and `"nist_reference"` (both taken verbatim from `RiskAssessment` — never recomputed or re-mapped in `dashboard/`). All timestamps are ISO-8601 (`datetime.isoformat()`); `final_category`/`risk_category` are the enum's `.value` string (`"LOW"`/`"MEDIUM"`/`"HIGH"`).
+
+**Report metadata DTO** (`serialize_report_metadata`):
+```json
+{
+  "report_id": "CIPHER-192-168-1-10-20260101T120000Z",
+  "device_ip": "192.168.1.10",
+  "generated_at": "2026-01-01T12:00:00+00:00",
+  "page_count": 3,
+  "report_hash": "<64 hex chars>",
+  "signature_preview": "<first 32 hex chars>...",
+  "signing_algorithm": "ML-DSA-44 (FIPS 204; derived from CRYSTALS-Dilithium)",
+  "verification_status": true,
+  "download_url": "/api/devices/192.168.1.10/report/download"
+}
+```
+`signature_preview` is a short, truncated prefix of `ReportMetadata.signature_hex` (which is thousands of characters for a real ML-DSA-44 signature) — the full value is never sent over REST; it remains in the generated PDF and in the backend's own `ReportMetadata`.
+
+**Standard error shape**, used for every 404 (both explicit — unknown device/report — and a global fallback for any unmatched or malformed URL, so a garbage path never returns Flask's default HTML 404 or leaks a filesystem detail):
+```json
+{"error": "not_found", "message": "No device found with IP 203.0.113.9"}
+```
+
+**CORS:** an optional `CORS_ORIGIN` setting (env-overridable, `None` by default — no new configuration subsystem, just one more field on the existing `Settings`/`config.constants` pattern). When set, every response carries `Access-Control-Allow-Origin: <exact configured value>` via a small Flask `after_request` hook — no `flask-cors` dependency. When unset, no cross-origin header is added at all. A wildcard (`*`) is never emitted under any configuration.
+
+**Dependency boundary:** `dashboard/` imports only `models/`, `config/`, `flask`, and its own `dashboard.state`/`dashboard.serializers` — never `capture/`, `fingerprint/`, `risk/`, `ml/`, `fusion/`, `pipeline/`, or `signing/` (enforced by a static-analysis test, same precedent as `fusion/`, `ml/loading.py`, `risk/port_risk.py`, `signing/`). `run_api.py` is the only place Phase 12 code imports `pipeline.runner`/`ml.loading`/`signing` — it builds the plain `ApplicationState` and hands it to `dashboard.create_app()`, so `dashboard/` never recomputes an assessment.
+
+**`dashboard/mock_data.py` remains unimplemented** — not needed for the real REST path in Phase 1, and your teammate can mock the frozen JSON contract above directly rather than the backend building a second fake backend.
+
+**Not implemented:** frontend code, dashboard HTML/UI, isolation/remediation, Raspberry Pi behavior, a database, `DeviceRegistry`, `flask-cors`.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

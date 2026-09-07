@@ -25,6 +25,11 @@ DEFAULT_MODEL_PATH = "ml/artifacts/anomaly_detector.joblib"
 DEFAULT_SIGNING_KEY_PATH = "data/keys/"
 DEFAULT_FLASK_HOST = "127.0.0.1"
 DEFAULT_FLASK_PORT = 5000
+
+# No default: the frontend's dev-server origin is unknown to the backend
+# ahead of time. None means "no cross-origin allowance" — never a wildcard
+# (see docs/SDD.md's Phase 12 addendum).
+DEFAULT_CORS_ORIGIN = None
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOG_DIR = "logs/"
 DEFAULT_DATA_DIR = "data/"

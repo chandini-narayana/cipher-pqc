@@ -46,6 +46,7 @@ from ml.classifier import AnomalyDetector
 from models.device import Device
 from models.device_assessment import DeviceAssessment
 from models.enums import RiskCategory
+from models.report_metadata import ReportMetadata
 from pipeline.assessment_pipeline import assess_packet
 from reports.pdf_generator import DEFAULT_REPORT_OUTPUT_DIR, generate_report, is_flagged_device
 from risk.port_risk import port_risk_for_protocol
@@ -65,7 +66,7 @@ def run_capture(
     public_key: bytes,
     secret_key: bytes,
     report_output_dir: Union[str, Path] = DEFAULT_REPORT_OUTPUT_DIR,
-) -> Tuple[List[DeviceAssessment], List[Path]]:
+) -> Tuple[List[DeviceAssessment], List[Tuple[Path, ReportMetadata]]]:
     """Run one full pass over `capture_source` and generate reports for
     every device whose final, retained assessment is flagged.
 
@@ -87,9 +88,12 @@ def run_capture(
     here and always propagate.
 
     Returns:
-        (retained_assessments, report_paths) — one assessment per
-        observed device (in first-seen order), and the path of every
-        PDF actually written.
+        (retained_assessments, reports) — one assessment per observed
+        device (in first-seen order), and one (path, ReportMetadata)
+        pair for every PDF actually written. Phase 12's REST API needs
+        the ReportMetadata that Phase 11 previously discarded; this is
+        the smallest change that retains it — no scoring, ML, signing,
+        or reporting behavior is altered.
     """
     devices: Dict[str, Device] = {}
     representatives: Dict[str, DeviceAssessment] = {}
@@ -107,19 +111,19 @@ def run_capture(
                 exc_info=True,
             )
 
-    report_paths: List[Path] = []
+    reports: List[Tuple[Path, ReportMetadata]] = []
     for ip, assessment in representatives.items():
         if not is_flagged_device(assessment):
             continue
         try:
-            path, _metadata = generate_report(
+            path, metadata = generate_report(
                 assessment, secret_key, public_key, output_dir=report_output_dir
             )
-            report_paths.append(path)
+            reports.append((path, metadata))
         except Exception:  # noqa: BLE001 - one failed report must not abort the rest
             logger.error("Failed to generate report for device %s; skipping.", ip, exc_info=True)
 
-    return list(representatives.values()), report_paths
+    return list(representatives.values()), reports
 
 
 def _process_packet(

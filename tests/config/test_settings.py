@@ -34,6 +34,7 @@ def _clean_env(monkeypatch):
         "SIGNING_KEY_PATH",
         "FLASK_HOST",
         "FLASK_PORT",
+        "CORS_ORIGIN",
         "LOG_LEVEL",
         "LOG_DIR",
         "DATA_DIR",
@@ -80,6 +81,21 @@ def test_load_settings_respects_model_path_env_override(monkeypatch) -> None:
     settings = load_settings()
 
     assert settings.model_path == Path("custom/models/detector.joblib")
+
+
+def test_settings_cors_origin_defaults_to_none() -> None:
+    """No default cross-origin allowance unless explicitly configured —
+    never a wildcard (see docs/SDD.md's Phase 12 addendum)."""
+    settings = Settings()
+    assert settings.cors_origin is None
+
+
+def test_load_settings_respects_cors_origin_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("CORS_ORIGIN", "http://localhost:3000")
+
+    settings = load_settings()
+
+    assert settings.cors_origin == "http://localhost:3000"
 
 
 def test_load_settings_never_raises_on_empty_environment() -> None:

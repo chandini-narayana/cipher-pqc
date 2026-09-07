@@ -80,7 +80,7 @@ def main() -> int:
         anomaly_detector = load_anomaly_detector(settings.model_path)
         public_key, secret_key = load_or_create_keypair(settings.signing_key_path)
 
-        assessments, report_paths = run_capture(
+        assessments, reports = run_capture(
             capture_source, anomaly_detector, public_key, secret_key
         )
     except CipherError:
@@ -90,11 +90,11 @@ def main() -> int:
     logger.info(
         "Capture run complete: %d device(s) assessed, %d report(s) generated.",
         len(assessments),
-        len(report_paths),
+        len(reports),
     )
     print(
         f"Capture run complete: {len(assessments)} device(s) assessed, "
-        f"{len(report_paths)} report(s) generated."
+        f"{len(reports)} report(s) generated."
     )
     return 0
 

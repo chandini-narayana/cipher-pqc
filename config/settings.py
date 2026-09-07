@@ -13,6 +13,7 @@ from typing import Optional
 
 from config.constants import (
     DEFAULT_CAPTURE_MODE,
+    DEFAULT_CORS_ORIGIN,
     DEFAULT_DATA_DIR,
     DEFAULT_FLASK_HOST,
     DEFAULT_FLASK_PORT,
@@ -49,6 +50,7 @@ class Settings:
     signing_key_path: Path = Path(DEFAULT_SIGNING_KEY_PATH)
     flask_host: str = DEFAULT_FLASK_HOST
     flask_port: int = DEFAULT_FLASK_PORT
+    cors_origin: Optional[str] = DEFAULT_CORS_ORIGIN
     log_level: str = DEFAULT_LOG_LEVEL
     log_dir: Path = Path(DEFAULT_LOG_DIR)
     data_dir: Path = Path(DEFAULT_DATA_DIR)
@@ -82,6 +84,7 @@ def load_settings() -> Settings:
         ),
         flask_host=os.environ.get("FLASK_HOST", DEFAULT_FLASK_HOST),
         flask_port=int(os.environ.get("FLASK_PORT", DEFAULT_FLASK_PORT)),
+        cors_origin=os.environ.get("CORS_ORIGIN") or DEFAULT_CORS_ORIGIN,
         log_level=os.environ.get("LOG_LEVEL", DEFAULT_LOG_LEVEL),
         log_dir=Path(os.environ.get("LOG_DIR", DEFAULT_LOG_DIR)),
         data_dir=Path(os.environ.get("DATA_DIR", DEFAULT_DATA_DIR)),

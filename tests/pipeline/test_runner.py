@@ -328,6 +328,36 @@ def test_later_assessment_wins_on_category_and_score_tie(monkeypatch) -> None:
     assert assessments[0].assessed_at == later_ts
 
 
+# --- return-shape contract: run_capture retains real ReportMetadata ---
+
+
+def test_returned_report_metadata_corresponds_to_the_written_pdf(tmp_path, monkeypatch) -> None:
+    """Uses the real generate_report (no mocking) end-to-end: confirms
+    run_capture's second return value is (Path, ReportMetadata) pairs,
+    not just paths, and that the metadata genuinely describes the file
+    written at that path."""
+    from reports.pdf_generator import generate_report as real_generate_report
+    from signing import generate_keypair
+
+    monkeypatch.setattr(runner_module, "generate_report", real_generate_report)
+
+    public_key, secret_key = generate_keypair()
+    packet = _raw_packet("10.0.0.5", payload=b"\x16\x03\x03\x00\x10" + b"A" * 16)
+
+    assessments, reports = run_capture(
+        _FakeCaptureSource([packet]), None, public_key, secret_key, report_output_dir=tmp_path
+    )
+
+    assert len(assessments) == 1
+    assert len(reports) == 1  # this fixture payload lands in a flagged category
+
+    path, metadata = reports[0]
+    assert isinstance(metadata, ReportMetadata)
+    assert path.exists()
+    assert path.name == f"{metadata.report_id}.pdf"
+    assert metadata.device_ip == "10.0.0.5"
+
+
 # --- 14-19. reporting ---
 
 
@@ -457,10 +487,10 @@ def test_report_generation_failure_for_one_device_does_not_stop_others(monkeypat
     monkeypatch.setattr(runner_module, "generate_report", fake_generate_report)
 
     packets = [_raw_packet("10.0.0.5"), _raw_packet("10.0.0.6")]
-    assessments, report_paths = run_capture(_FakeCaptureSource(packets), None, *_KEYS)
+    assessments, reports = run_capture(_FakeCaptureSource(packets), None, *_KEYS)
 
     assert len(assessments) == 2  # both devices still assessed
-    assert len(report_paths) == 1  # only the successful report is returned
+    assert len(reports) == 1  # only the successful report is returned
     assert report_calls[0].device.ip == "10.0.0.6"
 
 
