@@ -7,6 +7,7 @@ absence of python-dotenv, not by unit-testable business logic — and is
 covered instead by a smoke check that load_settings() never raises.
 """
 import os
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from config.constants import (
     DEFAULT_CAPTURE_MODE,
     DEFAULT_FLASK_PORT,
     DEFAULT_LOG_LEVEL,
+    DEFAULT_MODEL_PATH,
     DEFAULT_RISK_ISOLATION_THRESHOLD,
 )
 from config.settings import Settings, load_settings
@@ -64,6 +66,20 @@ def test_load_settings_respects_env_var_override(monkeypatch) -> None:
     assert settings.capture_mode == "mock"
     assert settings.log_level == "DEBUG"
     assert settings.flask_port == 9000
+
+
+def test_settings_model_path_defaults_to_the_isolation_forest_artifact() -> None:
+    settings = Settings()
+    assert settings.model_path == Path(DEFAULT_MODEL_PATH)
+    assert settings.model_path == Path("ml/artifacts/anomaly_detector.joblib")
+
+
+def test_load_settings_respects_model_path_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_PATH", "custom/models/detector.joblib")
+
+    settings = load_settings()
+
+    assert settings.model_path == Path("custom/models/detector.joblib")
 
 
 def test_load_settings_never_raises_on_empty_environment() -> None:

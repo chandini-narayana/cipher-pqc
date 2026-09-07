@@ -14,6 +14,7 @@ random_state choices, and anomaly-score/confidence semantics.
 from ml.classifier import DEFAULT_CONTAMINATION, DEFAULT_RANDOM_STATE, AnomalyDetector
 from ml.dataset import generate_synthetic_feature_matrix
 from ml.features import FEATURE_NAMES, NUM_FEATURES, vectorize_features
+from ml.loading import load_anomaly_detector
 
 __all__ = [
     "AnomalyDetector",
@@ -23,4 +24,5 @@ __all__ = [
     "FEATURE_NAMES",
     "NUM_FEATURES",
     "generate_synthetic_feature_matrix",
+    "load_anomaly_detector",
 ]

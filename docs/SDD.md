@@ -42,7 +42,7 @@ Five processing layers plus cross-cutting concerns, now with two additions from 
 
 **D3 — Orchestration lives in `pipeline/`, not `main.py`.** `pipeline.runner.Pipeline` owns the per-packet sequence (capture → entropy/fingerprint → risk → ml → sign → registry update), the background-thread lifecycle, and the per-packet fault isolation from Section 12. `main.py` becomes a pure composition root: it constructs each component from `Settings` and hands them to `Pipeline` and the Flask app factory — nothing else. Two benefits, one immediate and one forward-looking (noted briefly, not designed further): immediately, `Pipeline` becomes unit-testable end-to-end without `main.py` or Flask in the picture at all; and later, Phase 2's isolation/alerting behavior has one obvious extension point — a hook on `Pipeline` — rather than requiring changes scattered through a monolithic `main.py`.
 
-**D4 (retained from draft) — ML fallback.** When no trained model is present at startup, `MLClassifier` falls back to deriving `RiskCategory` directly from the numeric `risk_score` thresholds already defined in `risk/scoring.py`, logs a warning once, and the pipeline continues normally. A missing model is never a startup failure.
+**D4 (superseded — see Section 21) — ML fail-open.** The draft's original wording described a `MLClassifier` that derived `RiskCategory` directly from `risk_score` thresholds when no model was present; that class no longer exists. Current architecture: `risk/`'s Quantum Risk Score is the primary, always-on assessment — it never depends on ML being available. `ml/`'s `AnomalyDetector` (Isolation Forest) is a secondary, optional anomaly signal. When no trained model artifact is present, `ml.loading.load_anomaly_detector()` logs one warning and returns `None`; `fusion.fuse_assessments()` already defines `anomaly_assessment=None` → the QRS category passes through unchanged (Section 19). A missing model is never a startup failure.
 
 ---
 
@@ -414,7 +414,7 @@ Unchanged from the draft: a single `Settings` dataclass in `config/settings.py`,
 | `PCAP_PATH` | `tests/fixtures/sample.pcap` | used when `CAPTURE_MODE=offline` |
 | `LIVE_INTERFACE` | `None` | reserved for when `live_source.py` is implemented |
 | `RISK_ISOLATION_THRESHOLD` | `7` | defined now so Phase 2 doesn't invent a second source of truth; unused by any logic in Phase 1 |
-| `MODEL_PATH` | `ml/artifacts/risk_classifier.pkl` | trained classifier location |
+| `MODEL_PATH` | `ml/artifacts/anomaly_detector.joblib` | trained Isolation Forest (`AnomalyDetector`) artifact location — see Section 21 |
 | `SIGNING_KEY_PATH` | `data/keys/` | Dilithium2 keypair persistence |
 | `FLASK_HOST` / `FLASK_PORT` | `127.0.0.1` / `5000` | dashboard bind address |
 | `LOG_LEVEL` | `INFO` | root log level |
@@ -589,6 +589,22 @@ Exactly one `DeviceFeatures` instance is built per call and reused for both `eva
 
 ---
 
+## 21. Step 12A Addendum — Anomaly Model Loading and Configuration Alignment
+
+**Status:** Step 12A (ml/loading.py, config path fix) complete and verified.
+
+**Canonical model artifact:** `ml/artifacts/anomaly_detector.joblib` — this is what `ml/train.py` actually produces via `AnomalyDetector.save()` (joblib, not pickle). `config/constants.py`'s `DEFAULT_MODEL_PATH` previously named a stale, superseded artifact (`ml/artifacts/risk_classifier.pkl`, left over from the original Decision Tree/`MLClassifier` draft — see the corrected D4 note in Section 2) that `ml/train.py` never produced; it now matches the real filename and format. `Settings.model_path` (config/settings.py) is unchanged — it already reads the `MODEL_PATH` environment variable with this corrected default as its fallback, so `MODEL_PATH=<custom path>` continues to override it exactly as before.
+
+**Runtime loading contract:** `ml.loading.load_anomaly_detector(model_path)`:
+- **Artifact present** → calls `AnomalyDetector.load(model_path)` and returns the loaded, usable detector.
+- **Artifact missing** → logs one `WARNING` naming the path and returns `None`. This is not a startup failure: QRS (`risk/`) is CIPHER's primary, always-on assessment engine and never depends on ML being available; Isolation Forest is a secondary, optional anomaly signal. `None` integrates directly with the already-approved Step 10 fusion rule (Section 19): `fuse_assessments(..., anomaly_assessment=None, ...)` passes the QRS category through unchanged.
+- **Artifact present but corrupt or incompatible** (fails to deserialize, or deserializes to something other than an `AnomalyDetector`) → the genuine underlying error propagates unmodified. This is deliberately *not* treated the same as "missing": a broken configured artifact is a real configuration problem the caller must be able to see and distinguish from ordinary "no model configured yet" operation.
+- **Never**, under any of the above: fits a model, calls `ml.train`, calls `ml.dataset.generate_synthetic_feature_matrix`, constructs a fallback `AnomalyDetector`, or saves anything. Loading and training remain fully separate — `ml/train.py`'s CLI is the only place a model is ever produced, run explicitly and separately from ordinary runtime.
+
+**Not implemented:** wiring this loader into `main.py` or `pipeline.runner` (both remain later, explicitly-scoped steps), any `port_risk` policy, `DeviceRegistry`, device identity.
+
+---
+
 ## Approved Decisions Recap
 
-D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML rule-based fallback retained) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.
+D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

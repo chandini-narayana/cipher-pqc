@@ -21,7 +21,7 @@ DEFAULT_PCAP_PATH = "tests/fixtures/sample.pcap"
 # (see docs/SDD.md Section 15).
 DEFAULT_RISK_ISOLATION_THRESHOLD = 7
 
-DEFAULT_MODEL_PATH = "ml/artifacts/risk_classifier.pkl"
+DEFAULT_MODEL_PATH = "ml/artifacts/anomaly_detector.joblib"
 DEFAULT_SIGNING_KEY_PATH = "data/keys/"
 DEFAULT_FLASK_HOST = "127.0.0.1"
 DEFAULT_FLASK_PORT = 5000
