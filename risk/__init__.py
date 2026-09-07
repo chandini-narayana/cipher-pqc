@@ -10,6 +10,7 @@ without a documented judgment call.
 
 from risk.engine import evaluate_risk
 from risk.nist_mapping import build_remediation_and_reference, contributing_findings
+from risk.port_risk import port_risk_for_protocol
 from risk.scoring import (
     category_for_score,
     entropy_risk,
@@ -27,4 +28,5 @@ __all__ = [
     "entropy_risk",
     "contributing_findings",
     "build_remediation_and_reference",
+    "port_risk_for_protocol",
 ]

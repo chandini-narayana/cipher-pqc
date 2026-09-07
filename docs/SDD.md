@@ -575,7 +575,7 @@ Exactly one `DeviceFeatures` instance is built per call and reused for both `eva
 
 **`Device` and `port_risk` remain external, deliberately.** Neither is derived inside this step:
 - **Device identity** — nothing in the codebase defines whether a packet's `src_ip` or `dst_ip` identifies "the device," and `DeviceRegistry` (utils/registry.py) — the component that would own device lifecycle/identity across observations — is not implemented yet. `assess_packet()` takes an already-identified `Device` as a required argument rather than guessing.
-- **`port_risk`** — no approved HTTP/MQTT/Telnet-to-port-risk mapping exists (see risk/scoring.py's own docstring on `quantum_risk_score()`). `assess_packet()` takes `port_risk` as a required external argument, exactly as `risk.evaluate_risk()` already does — it is not derived from `ProtocolFingerprint.protocol`.
+- **`port_risk`** — at the time of this step, no approved HTTP/MQTT/Telnet-to-port-risk mapping existed (see risk/scoring.py's own docstring on `quantum_risk_score()`); Step 12B (Section 22) has since frozen one as `risk.port_risk_for_protocol()`. `assess_packet()` still takes `port_risk` as a required external argument, exactly as `risk.evaluate_risk()` already does — Step 12B deliberately did not wire the new mapping function into `assess_packet()`; that wiring belongs to the future runtime runner, not to this pipeline's contract.
 
 **The anomaly detector is dependency-injected and optional, never acquired internally.** `assess_packet(..., anomaly_detector=None)` skips the ML stage entirely and passes `anomaly_assessment=None` straight to `fuse_assessments()`, which already defines that exact pass-through behavior (Section 19). This step does not instantiate, fit, load, or save an `AnomalyDetector`, and never calls `ml/dataset.py`'s synthetic data generator — there is no fallback ML behavior of any kind. A caller who has a fitted detector supplies it; a caller who doesn't, doesn't, and ML is simply unavailable for that observation.
 
@@ -601,7 +601,35 @@ Exactly one `DeviceFeatures` instance is built per call and reused for both `eva
 - **Artifact present but corrupt or incompatible** (fails to deserialize, or deserializes to something other than an `AnomalyDetector`) → the genuine underlying error propagates unmodified. This is deliberately *not* treated the same as "missing": a broken configured artifact is a real configuration problem the caller must be able to see and distinguish from ordinary "no model configured yet" operation.
 - **Never**, under any of the above: fits a model, calls `ml.train`, calls `ml.dataset.generate_synthetic_feature_matrix`, constructs a fallback `AnomalyDetector`, or saves anything. Loading and training remain fully separate — `ml/train.py`'s CLI is the only place a model is ever produced, run explicitly and separately from ordinary runtime.
 
-**Not implemented:** wiring this loader into `main.py` or `pipeline.runner` (both remain later, explicitly-scoped steps), any `port_risk` policy, `DeviceRegistry`, device identity.
+**Not implemented:** wiring this loader into `main.py` or `pipeline.runner` (both remain later, explicitly-scoped steps), `port_risk` policy (resolved separately — see Section 22), `DeviceRegistry`, device identity.
+
+---
+
+## 22. Step 12B Addendum — port_risk Policy
+
+**Status:** Step 12B (risk/port_risk.py) complete and verified.
+
+**The gap this resolves:** `risk/scoring.py`'s `quantum_risk_score()` has always required `port_risk` as an external `int` argument, because the approved execution report specifies only that plaintext/insecure protocols such as HTTP, Telnet, and MQTT contribute "+1 to +2" risk — a range, not an exact per-protocol value (flagged as an open decision since Step 8; see Section 20's Step 11 addendum for how `assess_packet()` handled this by keeping `port_risk` external rather than guessing).
+
+**Frozen mapping — an explicit ENGINEERING POLICY, not a value taken verbatim from the execution report:**
+
+```
+ProtocolType.HTTPS  -> 0
+ProtocolType.OTHER  -> 0
+ProtocolType.HTTP   -> 1
+ProtocolType.MQTT   -> 1
+ProtocolType.TELNET -> 2
+```
+
+HTTPS and OTHER contribute 0 (encrypted, or no confident protocol evidence). HTTP and MQTT — plaintext/lightweight, commonly unauthenticated — sit at the bottom of the report's approved range. TELNET — plaintext remote shell access — sits at the top of that range, reflecting materially higher exposure than a plaintext web or IoT-messaging request. These exact numbers were chosen to operationalize the report's stated range; they should not be cited as if the report itself specified them.
+
+**`risk.port_risk_for_protocol(protocol: ProtocolType) -> int`** ([risk/port_risk.py](../risk/port_risk.py)) implements this mapping. It is keyed strictly on the already-classified `models.ProtocolType` enum (`fingerprint/protocol.py`'s own output) — never on transport port numbers (`src_port`/`dst_port` are not inspected), and never by string-matching a protocol name. An input that isn't a `ProtocolType` member raises `TypeError` rather than being silently treated as `OTHER`.
+
+**The QRS formula itself is unchanged.** `risk/scoring.py`'s `quantum_risk_score()` and `risk/engine.py`'s `evaluate_risk()` still take `port_risk` as a plain externally-supplied `int`, exactly as before this step — `port_risk_for_protocol()` is a separate, optional helper a caller may use to produce that argument; it is not called from inside `evaluate_risk()`.
+
+**Not wired into `assess_packet()` yet, deliberately.** `pipeline.assessment_pipeline.assess_packet()` continues to accept `port_risk` as a required external argument (Section 20). The intended future wiring — `fingerprint_packet(...).protocol -> port_risk_for_protocol(...) -> assess_packet(..., port_risk=...)` — belongs to the runtime runner step, not to this policy step.
+
+**Not implemented:** wiring `port_risk_for_protocol()` into `assess_packet()` or `pipeline.runner`, `DeviceRegistry`, device identity.
 
 ---
 
