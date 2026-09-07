@@ -302,8 +302,8 @@ def test_pipeline_is_stateless_across_independent_calls() -> None:
     device_a = Device.first_contact("10.0.0.5", TS)
     device_b = Device.first_contact("10.0.0.6", TS)
 
-    result_a1 = assess_packet(_raw_packet(), device_a, port_risk=0)
+    result_a1 = assess_packet(_raw_packet(), device_a, port_risk=0, assessed_at=TS)
     assess_packet(_raw_packet(), device_b, port_risk=2, anomaly_detector=_StubAnomalyDetector(True))
-    result_a2 = assess_packet(_raw_packet(), device_a, port_risk=0)
+    result_a2 = assess_packet(_raw_packet(), device_a, port_risk=0, assessed_at=TS)
 
     assert result_a1 == result_a2

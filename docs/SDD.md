@@ -633,6 +633,40 @@ HTTPS and OTHER contribute 0 (encrypted, or no confident protocol evidence). HTT
 
 ---
 
+## 23. Phase 9 Addendum — Cryptographic Signing & Verification
+
+**Status:** Phase 9 (signing/dilithium_signer.py, signing/key_store.py) complete and verified.
+
+**Implementation uses ML-DSA-44 under FIPS 204, not the legacy pre-standardization `Dilithium2` object.** ML-DSA is NIST's finalized post-quantum digital-signature standard (FIPS 204), standardizing the CRYSTALS-Dilithium algorithm family; ML-DSA-44 is the NIST security level 2 parameter set — the finalized descendant of the original pre-standardization "Dilithium2" parameter set (identical core parameters: k=4, l=4, eta=2, tau=39). The installed `dilithium-py` library ships both objects; this codebase deliberately calls `dilithium_py.ml_dsa.ML_DSA_44`, never `dilithium_py.dilithium.Dilithium2`.
+
+**Canonical human-readable algorithm label:**
+
+```
+ALGORITHM_NAME = "ML-DSA-44 (FIPS 204; derived from CRYSTALS-Dilithium)"
+```
+
+This is the value `signing.dilithium_signer.sign_assessment()` writes into every `SignedEvent.algorithm`, and the value `verify_signed_event()` requires an exact match against before attempting cryptographic verification (any other value fails verification immediately, without even inspecting the signature). Earlier scaffolding (Step 4-era test fixtures) used the placeholder string `"FIPS-204-Dilithium2"` — that has been replaced with this canonical label wherever it appeared; it was never the finalized name and is not preserved for backward compatibility.
+
+**Signing target: the canonical DeviceAssessment JSON, signed directly.** `canonicalize_assessment(assessment)` produces:
+
+```python
+json.dumps(assessment.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+```
+
+`sign_assessment()` signs these bytes directly — never a Python `repr()`, never pickle/joblib bytes, never a bare risk score, and never a pre-hash of the assessment. ML-DSA signs arbitrary-length messages natively; a `DeviceAssessment`'s JSON is small enough that no intermediate hash adds value here (contrast with report-level signing below, where the message being signed — rendered PDF bytes — genuinely warrants hashing first).
+
+**`SignedEvent` carries `assessment` + `signature_hex` + `algorithm` + `signed_at`** (models/signed_event.py, Step 4) — unchanged by this phase. `sign_assessment(assessment, secret_key, signed_at=None)` canonicalizes, signs, and wraps the result; `signed_at` is preserved if supplied, else set to the current UTC time.
+
+**Verification failure modes — all return `False`, none raise:** a tampered `assessment` (canonicalizes to different bytes than what was signed), a tampered `signature_hex`, the wrong `public_key`, and an `algorithm` label that doesn't equal `ALGORITHM_NAME`. Only malformed argument *types* (e.g., a non-`SignedEvent`, non-bytes key material) raise `TypeError` — verified end-to-end, including a full `SignedEvent.to_dict()`/`from_dict()` round-trip remaining verifiable.
+
+**Phase-1 key lifecycle** (`signing/key_store.py`, `load_or_create_keypair(key_dir)`): frozen filenames `ml_dsa_44_public.key` and `ml_dsa_44_secret.key` under the directory the caller supplies (in practice, `Settings.signing_key_path`, unchanged — still `SIGNING_KEY_PATH`, default `data/keys/`, env-overridable, not wired into `main.py` in this phase). Both files present → load and return them. Neither present → generate one keypair, create the directory if needed, persist both files, return them. **Exactly one present is treated as a failure, not a partial success** — `load_or_create_keypair` raises `RuntimeError` naming which file is missing, and never regenerates or overwrites the surviving key. Existing key files are never overwritten under any lifecycle branch. No passphrase encryption, no OS keyring integration, and no file-permission hardening are implemented — production-grade secret-key protection is explicitly future hardening, not attempted in Phase 1.
+
+**Report/PDF signing remains Phase 10.** `models.ReportMetadata` (Step 4) already has separate `report_hash` and `signature_hex` fields — a genuinely different signing target (hashed PDF bytes, since `ReportMetadata` cannot exist before a PDF is rendered) from `SignedEvent`'s direct-assessment-JSON signing. Phase 10 is expected to reuse this phase's generic `sign()`/`verify()` primitives on a report hash; this phase does not implement or assume anything about PDF rendering, `ReportGenerator`, `reports/`, REST, the frontend, `pipeline.runner`, or `DeviceRegistry`.
+
+**Not implemented:** PDF/report generation and signing, wiring `load_or_create_keypair`/`sign_assessment` into `main.py` or a future runtime runner.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

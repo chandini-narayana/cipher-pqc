@@ -12,6 +12,8 @@ from models.signed_event import SignedEvent
 
 TS = datetime(2026, 1, 1, 12, 0, 0)
 
+ALGORITHM = "ML-DSA-44 (FIPS 204; derived from CRYSTALS-Dilithium)"
+
 
 def _assessment() -> DeviceAssessment:
     return DeviceAssessment(
@@ -27,10 +29,10 @@ def test_valid_signed_event() -> None:
     se = SignedEvent(
         assessment=_assessment(),
         signature_hex="deadbeef",
-        algorithm="FIPS-204-Dilithium2",
+        algorithm=ALGORITHM,
         signed_at=TS,
     )
-    assert se.algorithm == "FIPS-204-Dilithium2"
+    assert se.algorithm == ALGORITHM
 
 
 def test_rejects_invalid_hex_signature() -> None:
@@ -38,7 +40,7 @@ def test_rejects_invalid_hex_signature() -> None:
         SignedEvent(
             assessment=_assessment(),
             signature_hex="not-hex!!",
-            algorithm="FIPS-204-Dilithium2",
+            algorithm=ALGORITHM,
             signed_at=TS,
         )
 
@@ -56,12 +58,12 @@ def test_rejects_empty_algorithm() -> None:
 def test_tamper_detection_via_changed_signature_breaks_equality() -> None:
     """This model doesn't verify signatures itself (signing/ does),
     but it should at least make a tampered copy trivially distinguishable."""
-    se1 = SignedEvent(_assessment(), "deadbeef", "FIPS-204-Dilithium2", TS)
-    se2 = SignedEvent(_assessment(), "deadbeee", "FIPS-204-Dilithium2", TS)
+    se1 = SignedEvent(_assessment(), "deadbeef", ALGORITHM, TS)
+    se2 = SignedEvent(_assessment(), "deadbeee", ALGORITHM, TS)
     assert se1 != se2
 
 
 def test_round_trip_serialization() -> None:
-    se1 = SignedEvent(_assessment(), "deadbeef", "FIPS-204-Dilithium2", TS)
+    se1 = SignedEvent(_assessment(), "deadbeef", ALGORITHM, TS)
     se2 = SignedEvent.from_dict(se1.to_dict())
     assert se1 == se2

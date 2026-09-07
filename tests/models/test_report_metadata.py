@@ -16,7 +16,7 @@ def _valid_kwargs(**overrides):
         page_count=3,
         report_hash="abc123",
         signature_hex="deadbeef",
-        signing_algorithm="FIPS-204-Dilithium2",
+        signing_algorithm="ML-DSA-44 (FIPS 204; derived from CRYSTALS-Dilithium)",
         verification_status=True,
     )
     kwargs.update(overrides)
