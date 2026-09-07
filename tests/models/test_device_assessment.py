@@ -46,3 +46,26 @@ def test_round_trip_serialization() -> None:
     a1 = _build()
     a2 = DeviceAssessment.from_dict(a1.to_dict())
     assert a1 == a2
+
+
+def _build_without_anomaly() -> DeviceAssessment:
+    return DeviceAssessment(
+        device=Device.first_contact("192.168.1.10", TS),
+        risk_assessment=RiskAssessment(9, RiskCategory.HIGH, "Upgrade TLS", "SP 800-52r2"),
+        anomaly_assessment=None,
+        final_category=RiskCategory.HIGH,
+        assessed_at=TS,
+    )
+
+
+def test_to_dict_serializes_none_anomaly_assessment_as_none() -> None:
+    assessment = _build_without_anomaly()
+    as_dict = assessment.to_dict()
+    assert as_dict["anomaly_assessment"] is None
+
+
+def test_round_trip_serialization_with_none_anomaly_assessment() -> None:
+    a1 = _build_without_anomaly()
+    a2 = DeviceAssessment.from_dict(a1.to_dict())
+    assert a1 == a2
+    assert a2.anomaly_assessment is None

@@ -517,6 +517,40 @@ None of this changes Phase 1's Windows behavior or adds complexity — it's simp
 **Persistence:** minimal `joblib.dump`/`load` of the whole `AnomalyDetector`, no registry or versioning.
 
 **Not implemented:** Risk Fusion, pipeline integration, REST API, frontend, any ML algorithm besides Isolation Forest.
+
+---
+
+## 19. Step 10 Addendum — Risk Fusion
+
+**Status:** Step 10 (fusion/) complete and verified.
+
+`fusion/risk_fusion.py`'s `fuse_assessments()` combines an already-produced `RiskAssessment` (risk/) and an optional `AnomalyAssessment` (ml/) into the `DeviceAssessment` that dashboard/, reports/, and the REST API are meant to consume. Like entropy/, fingerprint/, and risk/, this is a plain function, not a class — fusion is a pure, stateless rule with nothing to hold between calls.
+
+**Frozen rule: Category-Floor with One-Level Escalation.**
+
+```
+final_category = risk_assessment.category
+
+if anomaly_assessment is not None and anomaly_assessment.is_anomaly:
+    escalate exactly one level:
+        LOW -> MEDIUM
+        MEDIUM -> HIGH
+        HIGH -> HIGH
+```
+
+- **QRS category is the floor.** The rule-based Quantum Risk Score (risk/) always sets the starting category; Isolation Forest never lowers it and never sets it independently.
+- **The anomaly flag may raise the category by one level only.** There is no direct `LOW -> HIGH` jump, regardless of how confident or extreme the anomaly signal is.
+- **`confidence` does not gate or scale fusion.** Only the boolean `is_anomaly` flag is consulted; `anomaly_assessment.confidence` plays no role in the escalation decision.
+- **`anomaly_assessment=None` is a valid input and passes through unchanged.** ML not having run (or being unavailable) is not itself an anomaly signal — the rule-based category is used as-is.
+- **No weighted fusion, and no numeric combined score.** This is a discrete category-bucket rule, not an arithmetic blend of `risk_score` and `anomaly_score`; no new numeric "fused score" field exists anywhere in the output.
+- **`DeviceAssessment` is the final, fused, API-facing per-device result** (models/device_assessment.py, Step 4) — the only assessment object downstream consumers (dashboard/, reports/, the REST API) are meant to see. `DeviceAssessment.anomaly_assessment` is `Optional[AnomalyAssessment]` to accommodate the `None` case above; `to_dict()`/`from_dict()` serialize it as JSON `null` symmetrically.
+
+**Dependency boundary:** fusion/ imports only `models.*` — never `risk/` or `ml/` directly (enforced by a static-analysis test, same precedent as ml/features.py's "no risk-score leakage" check). It fuses already-computed outputs; it does not invoke either engine.
+
+**Not implemented:** pipeline integration, REST API, frontend, report generation, signing.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML rule-based fallback retained) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.
