@@ -267,14 +267,3 @@ def test_signer_module_has_no_forbidden_dependencies() -> None:
 
     forbidden = {"reports", "dashboard", "pipeline", "flask", "frontend", "risk", "ml"}
     assert not (imported_modules & forbidden)
-
-
-def test_no_pdf_or_report_implementation_was_introduced() -> None:
-    """Sentinel check: Phase 9 must not have touched reports/ — PDF/
-    report generation and report signing remain a later phase."""
-    import inspect
-
-    import reports.pdf_generator as pdf_generator_module
-
-    source = inspect.getsource(pdf_generator_module)
-    assert "TODO: implement ReportGenerator" in source

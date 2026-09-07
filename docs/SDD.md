@@ -661,9 +661,53 @@ json.dumps(assessment.to_dict(), sort_keys=True, separators=(",", ":")).encode("
 
 **Phase-1 key lifecycle** (`signing/key_store.py`, `load_or_create_keypair(key_dir)`): frozen filenames `ml_dsa_44_public.key` and `ml_dsa_44_secret.key` under the directory the caller supplies (in practice, `Settings.signing_key_path`, unchanged — still `SIGNING_KEY_PATH`, default `data/keys/`, env-overridable, not wired into `main.py` in this phase). Both files present → load and return them. Neither present → generate one keypair, create the directory if needed, persist both files, return them. **Exactly one present is treated as a failure, not a partial success** — `load_or_create_keypair` raises `RuntimeError` naming which file is missing, and never regenerates or overwrites the surviving key. Existing key files are never overwritten under any lifecycle branch. No passphrase encryption, no OS keyring integration, and no file-permission hardening are implemented — production-grade secret-key protection is explicitly future hardening, not attempted in Phase 1.
 
-**Report/PDF signing remains Phase 10.** `models.ReportMetadata` (Step 4) already has separate `report_hash` and `signature_hex` fields — a genuinely different signing target (hashed PDF bytes, since `ReportMetadata` cannot exist before a PDF is rendered) from `SignedEvent`'s direct-assessment-JSON signing. Phase 10 is expected to reuse this phase's generic `sign()`/`verify()` primitives on a report hash; this phase does not implement or assume anything about PDF rendering, `ReportGenerator`, `reports/`, REST, the frontend, `pipeline.runner`, or `DeviceRegistry`.
+**Report/PDF signing remains Phase 10.** `models.ReportMetadata` (Step 4) already has separate `report_hash` and `signature_hex` fields — a genuinely different signing target from `SignedEvent`'s direct-assessment-JSON signing. Phase 10 is expected to reuse this phase's generic `sign()`/`verify()` primitives on a report hash — **not a hash of the rendered PDF's own bytes** (see Section 24: hashing the final PDF file would be self-referential once that hash is displayed on the PDF itself; Phase 10 hashes a canonical report-*data* payload instead, following the same pattern as `canonicalize_assessment()` above). This phase does not implement or assume anything about PDF rendering, `ReportGenerator`, `reports/`, REST, the frontend, `pipeline.runner`, or `DeviceRegistry`.
 
 **Not implemented:** PDF/report generation and signing, wiring `load_or_create_keypair`/`sign_assessment` into `main.py` or a future runtime runner.
+
+---
+
+## 24. Phase 10 Addendum — Device-Specific PDF Security Reports
+
+**Status:** Phase 10 (reports/pdf_generator.py) complete and verified.
+
+**One concise, 3-page PDF per flagged device**, rendering only fields already available on an already-produced `DeviceAssessment` (Step 4/10) — no risk scoring, NIST mapping, or signing logic is duplicated inside `reports/`; it reuses `risk_assessment.remediation`/`.nist_reference` verbatim and delegates all cryptography to the unmodified `signing.sign()`/`signing.verify()`.
+
+**Flagged-device rule (frozen):** `is_flagged_device(assessment) -> bool` returns `assessment.final_category != RiskCategory.LOW` — LOW is not flagged, MEDIUM and HIGH both are. No QRS/fusion threshold is changed.
+
+**Report ID (frozen, deterministic, no registry):** `generate_report_id(device_ip, generated_at)` produces `CIPHER-<device-ip-with-separators-as-hyphens>-<UTC timestamp as YYYYMMDDTHHMMSSZ>` (e.g. `CIPHER-192-168-1-10-20260907T154500Z`) — a pure function of its two inputs, no UUID, no counter, no persisted state.
+
+**Output location:** `data/reports/` (module-level default in `reports/pdf_generator.py`, `DEFAULT_REPORT_OUTPUT_DIR`) — no new configuration subsystem; not added to `Settings`/`config/constants.py` in this phase.
+
+**The self-reference problem and its resolution.** The report must display its own integrity hash and signature (Page 3), but hashing the *final* rendered PDF bytes and then writing that hash onto the page would change the bytes the hash was computed from — circular, with no fixed point. Phase 10 resolves this exactly as Phase 9 resolved the equivalent problem for `DeviceAssessment`: hash and sign a **canonical report-content payload**, not any rendered artifact:
+
+```
+canonical_content = json.dumps(
+    {
+        "report_id": report_id,
+        "device_ip": device_ip,
+        "generated_at": generated_at.isoformat(),
+        "assessment": assessment.to_dict(),
+    },
+    sort_keys=True, separators=(",", ":"),
+).encode("utf-8")
+
+report_hash = sha256(canonical_content).hexdigest()
+signature   = signing.sign(bytes.fromhex(report_hash), secret_key)
+```
+
+Every value needed for Page 3 (`report_hash`, `signature_hex`, `signing_algorithm`, `verification_status`) is therefore known *before* any page is drawn — zero circularity. `report_hash` is labeled **"Report Integrity Hash (SHA-256)"** throughout, and the PDF's own Page 3 text explicitly states the signature protects the canonical report content, not the PDF byte stream — this is a hash of report *data*, never a claim about the final file's bytes. `ReportMetadata.signing_algorithm` is `signing.ALGORITHM_NAME`, reused verbatim (no new label). Only a short, truncated preview of `signature_hex` is printed on the page; the full value lives in `ReportMetadata.signature_hex`.
+
+**`verify_report(metadata, assessment, public_key) -> bool`** reconstructs the same canonical payload from `metadata` + the (separately supplied) `assessment`, recomputes the SHA-256 hash, confirms it matches `metadata.report_hash`, checks `metadata.signing_algorithm == signing.ALGORITHM_NAME`, and delegates the actual cryptographic check to `signing.verify()` unchanged — no duplicated cryptographic logic. Returns `False` for a tampered assessment, a tampered hash, a tampered signature, the wrong public key, or an algorithm mismatch.
+
+**Page layout, mapped to available fields:**
+- **Page 1 (Executive Summary):** `APP_NAME`/`APP_TAGLINE` branding, report ID, generated time, `device.ip`/`.first_seen`/`.last_seen`, `final_category`, `risk_assessment.risk_score`/`.category`, anomaly status ("Anomalous" / "Not anomalous" / "Not available" per `anomaly_assessment`), a short structural summary that does not restate specific findings (those live on Page 2).
+- **Page 2 (Technical Findings & NIST Remediation):** `risk_assessment.risk_score`/`.category`, `risk_assessment.remediation` (verbatim prose — already names the specific weak setting(s)), `risk_assessment.nist_reference` (verbatim), and full Isolation Forest detail (`is_anomaly`, `anomaly_score`, `confidence`) when `anomaly_assessment is not None`, else "Not available". No raw TLS version / key size / forward secrecy / entropy / protocol fields are rendered — `DeviceAssessment` does not carry them, and none are fabricated.
+- **Page 3 (Audit & Verification):** report ID, `assessed_at`, `generated_at`, the Report Integrity Hash (SHA-256), signing algorithm, verification status, and a truncated signature preview.
+
+**PDF library:** `reportlab` (already installed, already in `requirements.txt`) via its plain `Canvas` API — no new PDF dependency. Generated with `pageCompression=0` specifically so tests can locate expected text directly in the raw file bytes without OCR or a PDF-parsing dependency; page count is confirmed structurally (`/Type /Page` object count in the raw bytes), not visually.
+
+**Not implemented:** wiring `generate_report()`/`is_flagged_device()` into `main.py`, `pipeline.runner`, `DeviceRegistry`, REST, or the frontend.
 
 ---
 
