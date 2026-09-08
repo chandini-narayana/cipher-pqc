@@ -123,7 +123,12 @@ def generate_report(
         verification_status=verification_status,
     )
 
-    output_dir = Path(output_dir)
+    # Resolved to absolute here, at the point of creation, so every Path
+    # this function ever returns is safe to hand to Flask's send_file()
+    # later — Flask resolves a relative filename against the app's
+    # root_path, not the process's working directory, which otherwise
+    # makes a real download 500 even though the file genuinely exists.
+    output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = output_dir / f"{report_id}.pdf"
     _render_pdf(pdf_path, assessment, metadata)
