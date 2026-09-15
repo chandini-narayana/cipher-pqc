@@ -24,6 +24,7 @@ import sys
 from capture.factory import get_capture_source
 from config.settings import load_settings
 from dashboard import build_application_state, create_app
+from enforcement import NoOpIsolationBackend
 from ml.loading import load_anomaly_detector
 from pipeline.runner import run_capture
 from signing import load_or_create_keypair
@@ -58,8 +59,19 @@ def main() -> int:
         capture_source = get_capture_source(settings)
         anomaly_detector = load_anomaly_detector(settings.model_path)
         public_key, secret_key = load_or_create_keypair(settings.signing_key_path)
+        # Windows, hardware-free Phase 1: isolation decisions are made
+        # and logged, never physically enforced (see docs/SDD.md's
+        # Phase 14 addendum). Swapped at the composition root only.
+        isolation_backend = NoOpIsolationBackend()
 
-        assessments, reports = run_capture(capture_source, anomaly_detector, public_key, secret_key)
+        assessments, reports = run_capture(
+            capture_source,
+            anomaly_detector,
+            public_key,
+            secret_key,
+            isolation_backend,
+            risk_isolation_threshold=settings.risk_isolation_threshold,
+        )
     except CipherError:
         logger.error("Capture run failed; API will not start.", exc_info=True)
         return 1

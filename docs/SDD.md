@@ -806,6 +806,36 @@ Every value needed for Page 3 (`report_hash`, `signature_hex`, `signing_algorith
 
 ---
 
+## 27. Phase 14 Addendum — High-Risk Enforcement / Isolation Logic
+
+**Status:** Phase 14 (`enforcement/`) complete and verified. Real hardware execution remains deferred — see below.
+
+**Frozen isolation rule: raw QRS, never the fused category.** The Execution Report specifies isolation eligibility as a literal numeric condition, `QRS >= 7/10`. `enforcement.decision.should_isolate(assessment, threshold)` therefore returns `assessment.risk_assessment.risk_score >= threshold` and deliberately never reads `assessment.final_category`. This is intentional: Risk Fusion (Section 19) may escalate a device's *reported* category from MEDIUM to HIGH purely because Isolation Forest flagged an anomaly — but an ML-only signal must never trigger a high-consequence physical isolation action the deterministic, explainable QRS score does not itself support. A device with `risk_score=5` and an ML-escalated `final_category=HIGH` is **not** eligible for isolation. `should_isolate()` is pure — no logging, no I/O, no subprocess — and reuses the existing `RISK_ISOLATION_THRESHOLD`/`Settings.risk_isolation_threshold` (default 7, previously unused by any logic; this is the first step to actually read it).
+
+**`enforcement.backends.IsolationOutcome`** (`device_ip`, `risk_score`, `requested_at`, `requested`, `enforced`, `reason`) is a small, ephemeral, non-persisted result type living in `enforcement/`, not `models/` — isolation is a runtime enforcement concern, not a fused assessment fact, and nothing here is written to a database.
+
+**`enforcement.backends.IsolationBackend`** is the abstract hardware-execution boundary (`isolate(device_ip, risk_score) -> IsolationOutcome`; no `restore()` — nothing calls it and restoration semantics are exactly the kind of undefined firewall policy below that this phase must not invent). **`NoOpIsolationBackend`** is the only concrete backend implemented in Phase 1: it never calls `subprocess`, never touches iptables or the Windows Firewall, never requires administrator privileges, and never reports a successful physical isolation — it logs one `WARNING` and returns `enforced=False` with an explicit `reason`. This keeps "isolation decided" and "isolation enforced" as two distinct, honestly-reported facts, never conflated — exactly the distinction the original draft's Section 15 `NullHardware`/`RaspberryPiHardware` sketch already called for.
+
+**Real Raspberry Pi iptables execution remains deferred**, not because it was forgotten but because the Execution Report does not specify enough to implement responsibly: which chain, `INPUT` vs. `FORWARD`, source vs. destination rule direction, `DROP` vs. `REJECT`, duplicate-rule semantics, restoration semantics, or the privilege model. Inventing these now would be firewall policy, not architecture. A `LinuxIptablesBackend` is a future, explicitly-scoped addition, swapped in at the composition root exactly like `NoOpIsolationBackend` is today — never via platform-sniffing inside `enforcement/` or `pipeline/runner.py`.
+
+**Enforcement timing: immediate, per-packet — not deferred to EOF.** `pipeline.runner.run_capture()` calls `should_isolate()`/the injected `IsolationBackend` immediately after each individual `assess_packet()` result, inside `_process_packet()` — *before* that assessment is folded into the end-of-capture representative selection. This is deliberate: representative selection and report generation are a reporting concern that correctly waits for the strongest assessment across the whole run, but the Execution Report's detection-to-isolation latency target cannot be met by a decision that waits for EOF. Reporting itself is completely unchanged — still one PDF per flagged representative device, generated after the capture source is exhausted.
+
+**One isolation attempt per device per run.** A local `enforcement_attempted_ips: Set[str]` (explicitly *not* `isolated_ips` — `NoOpIsolationBackend` never actually isolates anything) — scoped to one `run_capture()` call, exactly like the existing per-run `devices`/`representatives` dicts, *not* `DeviceRegistry` — ensures a device that produces many high-risk packets is only ever handed to the backend once. The IP is marked attempted *before* the backend call, so a raising/failing attempt still counts as the one attempt (no retries).
+
+**Failure handling** mirrors the runner's existing per-packet/per-report fault-isolation style exactly: an unexpected exception from `isolation_backend.isolate()` is caught, logged at `ERROR` with device/QRS context, and the run continues — it never aborts remaining packet processing, and it never prevents that packet's assessment from still being recorded for representative selection. `KeyboardInterrupt`/`SystemExit` are not caught (only `Exception` is) and always propagate, consistent with the rest of `run_capture()`.
+
+**Auditability** uses the existing `logging` infrastructure only — no new persistence, no new file, no database. Two log lines per enforcement attempt: `NoOpIsolationBackend` logs its own hardware-unavailable warning; `pipeline.runner` separately logs the full decision context (device IP, QRS, threshold, requested/enforced, reason) that only the decision layer knows.
+
+**Composition root wiring, no new setting.** `main.py` and `run_api.py` each construct a single `NoOpIsolationBackend()` explicitly and pass it — together with `settings.risk_isolation_threshold` — into `run_capture()`. No platform detection, no new environment variable; a future Pi deployment swaps the concrete backend at this exact point, not inside `pipeline/runner.py`.
+
+**Reports, REST, and signing are unchanged.** The Execution Report does not require isolation status inside the PDF or the REST contract; `reports/`, `ReportMetadata`, `dashboard/routes.py`, `dashboard/serializers.py`, and the frozen Phase 12/13 API are untouched.
+
+**Stale terminology corrected:** Section 15's `RiskEvent.risk_score >= settings.RISK_ISOLATION_THRESHOLD` and `Pipeline._process_packet()` referred to the pre-Step-4-addendum draft types. The actual implementation is `assessment.risk_assessment.risk_score >= threshold` inside `pipeline.runner.run_capture()`'s per-packet loop — the design Section 15 sketched, using the terminology every later addendum already established.
+
+**Not implemented:** any real Linux/Raspberry-Pi iptables backend, root-privilege handling, restoration/unblock workflow, isolation status in the PDF or REST contract, any new configuration setting for backend selection.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

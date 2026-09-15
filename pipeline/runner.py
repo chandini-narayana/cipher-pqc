@@ -8,6 +8,7 @@ end-to-end run over a CaptureSource:
              resolve/update the observed device (local, in-run state only)
              fingerprint_packet(payload) -> port_risk_for_protocol(...)
              assess_packet(...) -> DeviceAssessment
+             should_isolate(...) -> isolation_backend.isolate(...) if eligible
              retain the strongest representative DeviceAssessment per device
         -> after EOF, for each retained MEDIUM/HIGH device:
              generate_report(...) -> one PDF
@@ -32,15 +33,26 @@ analysis. State is a small local dict, held only for the duration of
 one `run_capture()` call — this is explicitly not `DeviceRegistry`
 (utils/registry.py remains an unimplemented stub; no persistence, no
 locking, no query API, no cross-run history).
+
+Phase 14 enforcement timing (see docs/SDD.md's Phase 14 addendum):
+`should_isolate()` is evaluated immediately after each individual
+`assess_packet()` call — never deferred to end-of-capture representative
+selection, which is a reporting concern with a different (and looser)
+timing requirement than the Execution Report's detection-to-isolation
+target. `isolation_backend` is injected by the caller (main.py /
+run_api.py); this module never constructs a hardware backend itself.
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from capture.base import CaptureSource
 from capture.raw_packet import RawPacket
+from config.constants import DEFAULT_RISK_ISOLATION_THRESHOLD
+from enforcement.backends import IsolationBackend
+from enforcement.decision import should_isolate
 from fingerprint.protocol import fingerprint_packet
 from ml.classifier import AnomalyDetector
 from models.device import Device
@@ -65,27 +77,43 @@ def run_capture(
     anomaly_detector: Optional[AnomalyDetector],
     public_key: bytes,
     secret_key: bytes,
+    isolation_backend: IsolationBackend,
+    risk_isolation_threshold: int = DEFAULT_RISK_ISOLATION_THRESHOLD,
     report_output_dir: Union[str, Path] = DEFAULT_REPORT_OUTPUT_DIR,
 ) -> Tuple[List[DeviceAssessment], List[Tuple[Path, ReportMetadata]]]:
-    """Run one full pass over `capture_source` and generate reports for
-    every device whose final, retained assessment is flagged.
+    """Run one full pass over `capture_source`, isolating (per
+    `isolation_backend`) every device whose raw QRS reaches
+    `risk_isolation_threshold` as soon as it's observed, and generating
+    reports for every device whose final, retained assessment is flagged.
 
     `anomaly_detector` (already loaded once by the caller, or `None` if
     unavailable — never loaded here), `public_key`/`secret_key` (already
-    loaded/created once by the caller) are injected, not acquired by
-    this function.
+    loaded/created once by the caller), and `isolation_backend` (never
+    constructed here — see module docstring) are injected, not acquired
+    by this function.
+
+    Isolation eligibility is `assessment.risk_assessment.risk_score >=
+    risk_isolation_threshold` — the raw QRS score, never
+    `final_category` (see enforcement/decision.py's should_isolate for
+    why: an ML-only escalation to HIGH must not trigger physical
+    isolation). Each device is isolated at most once per run, the first
+    time it becomes eligible, regardless of how many further high-risk
+    packets it produces afterward.
 
     Exactly one retained DeviceAssessment is kept per observed device
     (keyed by `RawPacket.src_ip`) across the whole run — the strongest
     one, per the frozen representative-selection rule (see
     `_is_stronger`). A device with multiple flagged packets still
     produces exactly one PDF; a device that is never flagged produces
-    none.
+    none. This representative-selection/reporting behavior is
+    unaffected by isolation — enforcement acts on each individual
+    assessment as it's produced, not on the eventual representative.
 
-    Per-packet and per-report-generation failures are isolated: one bad
-    packet or one failed report is logged at ERROR and skipped, and the
-    run continues. `KeyboardInterrupt`/`SystemExit` are never caught
-    here and always propagate.
+    Per-packet, per-isolation-attempt, and per-report-generation
+    failures are isolated: one bad packet, one failed isolation
+    attempt, or one failed report is logged at ERROR and skipped, and
+    the run continues. `KeyboardInterrupt`/`SystemExit` are never
+    caught here and always propagate.
 
     Returns:
         (retained_assessments, reports) — one assessment per observed
@@ -97,10 +125,19 @@ def run_capture(
     """
     devices: Dict[str, Device] = {}
     representatives: Dict[str, DeviceAssessment] = {}
+    enforcement_attempted_ips: Set[str] = set()
 
     for raw_packet in capture_source.read_packets():
         try:
-            _process_packet(raw_packet, devices, representatives, anomaly_detector)
+            _process_packet(
+                raw_packet,
+                devices,
+                representatives,
+                anomaly_detector,
+                isolation_backend,
+                risk_isolation_threshold,
+                enforcement_attempted_ips,
+            )
         except Exception:  # noqa: BLE001 - one bad packet must not abort the run
             logger.error(
                 "Failed to process packet from %s:%s -> %s:%s; skipping.",
@@ -131,6 +168,9 @@ def _process_packet(
     devices: Dict[str, Device],
     representatives: Dict[str, DeviceAssessment],
     anomaly_detector: Optional[AnomalyDetector],
+    isolation_backend: IsolationBackend,
+    risk_isolation_threshold: int,
+    enforcement_attempted_ips: Set[str],
 ) -> None:
     device = _resolve_device(raw_packet, devices)
 
@@ -139,7 +179,57 @@ def _process_packet(
 
     assessment = assess_packet(raw_packet, device, port_risk, anomaly_detector)
 
+    _maybe_enforce_isolation(
+        assessment, isolation_backend, risk_isolation_threshold, enforcement_attempted_ips
+    )
+
     _update_representative(representatives, device.ip, assessment)
+
+
+def _maybe_enforce_isolation(
+    assessment: DeviceAssessment,
+    isolation_backend: IsolationBackend,
+    threshold: int,
+    enforcement_attempted_ips: Set[str],
+) -> None:
+    """Isolate `assessment`'s device if it just became eligible — at
+    most once per device per run. Marking the device as attempted
+    happens before calling the backend, so a raising/failing attempt
+    still counts as "the one attempt" (no retries) and never blocks
+    this packet's assessment from still being considered for
+    representative selection/reporting."""
+    ip = assessment.device.ip
+    if ip in enforcement_attempted_ips:
+        return
+    if not should_isolate(assessment, threshold):
+        return
+
+    enforcement_attempted_ips.add(ip)
+    risk_score = assessment.risk_assessment.risk_score
+
+    try:
+        outcome = isolation_backend.isolate(ip, risk_score)
+    except Exception:  # noqa: BLE001 - one failed isolation attempt must not abort the run
+        logger.error(
+            "Isolation backend raised while handling device %s (QRS=%d, threshold=%d); "
+            "continuing.",
+            ip,
+            risk_score,
+            threshold,
+            exc_info=True,
+        )
+        return
+
+    logger.info(
+        "Isolation decision for device %s: QRS=%d, threshold=%d, requested=%s, "
+        "enforced=%s, reason=%s",
+        ip,
+        risk_score,
+        threshold,
+        outcome.requested,
+        outcome.enforced,
+        outcome.reason,
+    )
 
 
 def _resolve_device(raw_packet: RawPacket, devices: Dict[str, Device]) -> Device:
