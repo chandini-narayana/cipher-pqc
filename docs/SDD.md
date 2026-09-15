@@ -462,7 +462,7 @@ Fault isolation lives in `Pipeline._loop()` (D3): each packet's processing is wr
 
 ## 14. Deployment Strategy
 
-Unchanged from the draft. Windows 11: venv, `pip install -r requirements.txt`, `python main.py`, dashboard at `127.0.0.1:5000`. Offline mode needs nothing beyond the pip install; live mode (once implemented) will need Npcap — not relevant to Phase 1's actual test/run path today since `live_source.py` is a scaffold. GitHub Actions runs `pytest -m "not live"` on push using committed fixtures only.
+Windows 11: venv, `pip install -r requirements.txt`. Three separate entrypoints exist, not one — see Section 28 for the full current picture: `python main.py` (offline batch run, no server, no dashboard — despite this section's earlier wording, `main.py` has never served a dashboard); `python run_api.py` (API-only dev server, `127.0.0.1:5000`, no UI); `python run_demo.py` (the integrated self-contained application — React UI + REST API together, `127.0.0.1:5000`, no `cipher-frontend`/Node/npm/Vite required at runtime). Offline mode needs nothing beyond the pip install; live mode (once implemented) will need Npcap — not relevant to Phase 1's actual test/run path today since `live_source.py` is a scaffold. GitHub Actions runs `pytest -m "not live"` on push using committed fixtures only.
 
 ---
 
@@ -833,6 +833,44 @@ Every value needed for Page 3 (`report_hash`, `signature_hex`, `signing_algorith
 **Stale terminology corrected:** Section 15's `RiskEvent.risk_score >= settings.RISK_ISOLATION_THRESHOLD` and `Pipeline._process_packet()` referred to the pre-Step-4-addendum draft types. The actual implementation is `assessment.risk_assessment.risk_score >= threshold` inside `pipeline.runner.run_capture()`'s per-packet loop — the design Section 15 sketched, using the terminology every later addendum already established.
 
 **Not implemented:** any real Linux/Raspberry-Pi iptables backend, root-privilege handling, restoration/unblock workflow, isolation status in the PDF or REST contract, any new configuration setting for backend selection.
+
+---
+
+## 28. Phase 15 Addendum — Self-Contained Application Packaging
+
+**Status:** Phase 15 packaging/integration (`web/`, `dashboard/spa.py`, `run_demo.py`) complete and verified. Evaluation fixtures, latency/false-positive benchmarks, and any packaging beyond a `pip install` + `python run_demo.py` workflow (browser auto-open, `.exe`/PyInstaller, a Windows launcher) remain out of scope and are not implemented.
+
+**Two-repository release-artifact boundary, not duplicated source ownership.** React/TypeScript source continues to live entirely in the separate `cipher-frontend` repository — nothing under `cipher-frontend/src`, its `package.json`, `node_modules`, or its Vite/TypeScript config is copied into this repository. What *is* committed here is `web/`: an exact, unmodified copy of `cipher-frontend/dist/` (its already-built production output — `index.html`, `favicon.svg`, `icons.svg`, `assets/*.js`, `assets/*.css`) checked in as a release artifact, the same way a compiled binary or a vendored third-party asset would be, not as source this repository owns or edits. `web/` is intentionally **not** gitignored.
+
+**Frontend release update procedure (developers only; end users never do this):**
+```
+cd cipher-frontend
+npm run build
+```
+then replace this repository's `web/` with the newly-built `cipher-frontend/dist/` contents, then rerun this repository's test suite before committing the updated `web/`. No automation for this exists or is planned in Phase 1 — it is a manual, infrequent step tied to frontend releases, not a build step of this repository.
+
+**Same-origin deployment, no new CORS surface.** `cipher-frontend`'s production build now issues same-origin requests (`/api/...`, no absolute host) rather than a build-time-baked `http://127.0.0.1:5000` base URL — a change made entirely in `cipher-frontend`, not here. `run_demo.py` therefore never needs `Settings.cors_origin` set, and no wildcard CORS behavior was added anywhere; the existing optional `CORS_ORIGIN` mechanism (Phase 12 addendum) is untouched and still available for `run_api.py`'s cross-origin dev workflow (a separately-running frontend dev server on a different port).
+
+**`run_demo.py` is a third composition root — `main.py` and `run_api.py` are both unmodified in behavior.** It performs the exact same one-shot composition `run_api.py` does (Settings → logging → `CaptureSource` → optional `AnomalyDetector` → signing keypair → `NoOpIsolationBackend` → `run_capture()` → `ApplicationState`), then additionally registers static/SPA serving (below) onto the Flask app before calling `app.run(...)`. `main.py`'s "load, run once, exit" contract and `run_api.py`'s API-only server are both unchanged — nothing about their tests, imports, or behavior was touched.
+
+**`dashboard/spa.py`, a small helper module, not a `dashboard/app.py` rewrite.** `dashboard.create_app()`'s existing contract (used unchanged by `run_api.py`) is left completely untouched — `run_api.py`'s app has no static/SPA routes at all, on purpose, since it remains the API-only dev entrypoint. `run_demo.py` alone calls the new `dashboard.spa.register_spa(app, web_dir)` after `create_app()` to layer static/SPA serving on top. `dashboard/spa.py` follows the same dependency-boundary precedent as the rest of `dashboard/` (enforced by a static-analysis test): it imports only `flask` and `pathlib`, never `capture/`, `fingerprint/`, `risk/`, `ml/`, `fusion/`, `pipeline/`, or `signing/` — it has no awareness of React, Vite, or Node, only of serving static files from a directory.
+
+**Route layering (registered on top of the existing, unchanged `/api/...` blueprint):**
+- `GET /` and `GET /favicon.svg` / `GET /icons.svg` serve the corresponding real file from `web/` directly.
+- `GET /assets/<path:filename>` serves the matching file from `web/assets/` directly — never through the fallback below.
+- `GET /<path:path>` (registered last) is the BrowserRouter fallback: it serves `web/index.html` for any other path (so a full-page reload on a client-side route like `/devices` or `/reports` survives), **except** a path starting with `api/`, which is aborted with a real `404` instead — a genuinely-unknown API path (e.g. `/api/does-not-exist`) must continue to 404 through the existing global JSON error handler, never silently receive the SPA shell. Flask/Werkzeug's routing already prefers a fully-static rule (like each real `/api/...` route) over a rule containing a `<path:...>` converter regardless of registration order, so the existing blueprint routes are never at risk of being shadowed by the fallback.
+
+**Fail-fast on a missing/incomplete build, never a silent or half-functional server.** `dashboard.spa.validate_web_build(web_dir)` requires both `index.html` and an `assets/` directory to exist; `run_demo.py` calls it once, before any capture work starts (so a missing build is reported immediately rather than after spending time on a capture pass and key generation), and `register_spa()` calls it again itself before registering any route, so the module is safe and correct even if ever used directly. Neither path attempts to invoke `npm`/Vite/Node automatically — the error message is purely informational (`"CIPHER web application is missing.\nExpected: <path>/web/index.html"`), pointing at the manual release procedure above.
+
+**Web directory resolution is anchored to the file, not the caller's cwd.** `run_demo.py`'s `WEB_DIR = Path(__file__).resolve().parent / "web"` — identical in spirit to `REPO_ROOT`-style path resolution already used by several test files (e.g. `tests/test_main_step3.py`) — so `python run_demo.py` behaves identically regardless of the directory it's launched from, and is unaffected by `Settings`' existing cwd-relative defaults (`LOG_DIR`, `DATA_DIR`, `SIGNING_KEY_PATH`, `generate_report`'s report-output default), which intentionally remain cwd-relative and untouched.
+
+**No new destructive startup behavior.** `run_demo.py` never clears `data/reports/`, `data/keys/`, or `logs/` on startup — it reuses `load_or_create_keypair`'s existing behavior exactly (a keypair is created once and never silently regenerated), the same as `main.py`/`run_api.py` always have.
+
+**Capture input unchanged.** `run_demo.py` uses the exact same `Settings`-driven `CaptureSource` construction as `run_api.py` (`PCAP_PATH`/`CAPTURE_MODE`, defaulting to the committed `tests/fixtures/sample.pcap`) — no new demo fixture was introduced in this step; that is explicitly deferred to a later Phase 15 hardening step.
+
+**Runtime independence from `cipher-frontend` is a tested property, not just a claim.** `web/` is a plain committed directory inside this repository; nothing in `run_demo.py` or `dashboard/spa.py` references `../cipher-frontend` or any path outside this repository at runtime. `cipher-frontend`, Node, npm, and Vite are build-time-only, developer-side concerns (see the release procedure above) — never a runtime dependency of `python run_demo.py`.
+
+**Not implemented:** HIGH-risk/isolation-triggering or MQTT-detected demo fixtures, any evaluation/latency/false-positive benchmark harness, browser auto-opening, `.exe`/PyInstaller packaging, a Windows batch launcher, and (per Section 27) any real hardware isolation backend.
 
 ---
 
