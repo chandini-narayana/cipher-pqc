@@ -177,6 +177,71 @@ def test_not_available_appears_when_anomaly_assessment_is_none(tmp_path) -> None
     assert b"Not available" in path.read_bytes()
 
 
+# --- expanded Page 1 executive summary content ---
+
+
+def test_page_1_has_the_expanded_executive_summary_sections(tmp_path) -> None:
+    public_key, secret_key = generate_keypair()
+    path, _ = generate_report(_high_assessment(), secret_key, public_key, output_dir=tmp_path)
+    data = path.read_bytes()
+    for heading in (
+        b"Assessment Overview",
+        b"Key Findings",
+        b"Recommended Action",
+        b"Anomaly Analysis",
+        b"Applicable Guidance",
+    ):
+        assert heading in data
+
+
+def test_key_findings_are_bulleted_verbatim_remediation_sentences(tmp_path) -> None:
+    public_key, secret_key = generate_keypair()
+    assessment = _high_assessment()
+    path, _ = generate_report(assessment, secret_key, public_key, output_dir=tmp_path)
+    data = path.read_bytes()
+
+    assert b"- Upgrade from TLS 1.0" in data  # a real bulleted list, not bare prose
+    for sentence in (
+        "Upgrade from TLS 1.0 to TLS 1.3.",
+        "Enable forward secrecy",
+        "Increase RSA key size",
+    ):
+        assert sentence.encode() in data
+
+
+def test_assessment_overview_uses_real_device_and_score_values(tmp_path) -> None:
+    public_key, secret_key = generate_keypair()
+    assessment = _high_assessment()
+    path, _ = generate_report(assessment, secret_key, public_key, output_dir=tmp_path)
+    data = path.read_bytes()
+
+    assert assessment.device.ip.encode() in data
+    assert b"9/10" in data  # Assessment Overview's own risk-score phrasing
+    assert b"Quantum Risk Score" in data
+
+
+def test_no_invented_technical_field_labels_are_introduced(tmp_path) -> None:
+    """Only fields already available on DeviceAssessment/RiskAssessment
+    may be rendered as labeled fields — TLS version, RSA key size, PFS,
+    protocol, cipher suite, and entropy are not on that model and must
+    never appear as an invented "Label:" field."""
+    public_key, secret_key = generate_keypair()
+    path, _ = generate_report(_high_assessment(), secret_key, public_key, output_dir=tmp_path)
+    data = path.read_bytes()
+
+    for forbidden_label in (
+        b"TLS Version:",
+        b"RSA Key Size:",
+        b"Key Size:",
+        b"Forward Secrecy:",
+        b"Protocol:",
+        b"Cipher Suite:",
+        b"Entropy:",
+        b"Packet Count:",
+    ):
+        assert forbidden_label not in data
+
+
 def test_signing_algorithm_appears(tmp_path) -> None:
     public_key, secret_key = generate_keypair()
     path, metadata = generate_report(_high_assessment(), secret_key, public_key, output_dir=tmp_path)
