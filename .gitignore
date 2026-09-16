@@ -10,3 +10,4 @@ data/*
 ml/artifacts/*.pkl
 .pytest_cache/
 tests/fixtures/*.pcap
+!tests/fixtures/demo_presentation.pcap
