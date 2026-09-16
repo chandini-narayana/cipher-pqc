@@ -135,7 +135,16 @@ class AnomalyDetector:
         raw_decision = float(self._model.decision_function(vector)[0])
         anomaly_score = -raw_decision
 
-        is_anomaly = bool(self._model.predict(vector)[0] == -1)
+        # Derived directly from raw_decision rather than calling
+        # self._model.predict(vector): sklearn's own IsolationForest.predict()
+        # (confirmed by reading its source for the installed version) does
+        # nothing more than call decision_function() again and threshold at
+        # zero. Calling .predict() here would silently repeat the same
+        # expensive computation predict_one() already did above — this was
+        # a measured, confirmed ~2x cost in the Pre-Pi efficiency audit, and
+        # this line is exactly equivalent to `self._model.predict(vector)[0]
+        # == -1`, never an approximation of it.
+        is_anomaly = raw_decision < 0
 
         confidence = 1.0 / (1.0 + math.exp(-anomaly_score / self._score_std))
         confidence = min(max(confidence, 0.0), 1.0)

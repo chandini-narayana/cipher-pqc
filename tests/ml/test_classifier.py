@@ -20,7 +20,7 @@ from models.packet_metadata import PacketMetadata
 from models.protocol_fingerprint import ProtocolFingerprint
 from ml.classifier import AnomalyDetector
 from ml.dataset import generate_synthetic_feature_matrix
-from ml.features import NUM_FEATURES
+from ml.features import NUM_FEATURES, vectorize_features
 
 TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -196,6 +196,96 @@ def test_predict_one_returns_a_valid_anomaly_assessment_instance() -> None:
     assert isinstance(result.anomaly_score, float)
     assert isinstance(result.is_anomaly, bool)
     assert isinstance(result.confidence, float)
+
+
+def test_predict_one_is_anomaly_matches_sklearn_predict_for_inlier() -> None:
+    """Core equivalence proof (Pre-Pi audit optimization): predict_one()
+    no longer calls self._model.predict() -- this proves its optimized
+    is_anomaly still matches exactly what the real, unmocked sklearn
+    IsolationForest.predict() itself would have said, for a normal
+    (inlier) observation."""
+    detector = AnomalyDetector()
+    detector.fit(generate_synthetic_feature_matrix())
+    features = _device_features()
+
+    vector = vectorize_features(features).reshape(1, -1)
+    expected = bool(detector._model.predict(vector)[0] == -1)
+
+    result = detector.predict_one(features)
+
+    assert result.is_anomaly == expected
+    assert result.is_anomaly is False  # sanity: this is the file's own "normal" fixture
+
+
+def test_predict_one_is_anomaly_matches_sklearn_predict_for_clear_anomaly() -> None:
+    """Same proof, for a clearly anomalous observation."""
+    detector = AnomalyDetector()
+    detector.fit(generate_synthetic_feature_matrix())
+    features = _device_features(
+        tls_version=TLSVersion.TLS_1_0, key_size=512, forward_secrecy=False,
+        entropy=2.0, protocol=ProtocolType.HTTP, packet_size=30,
+    )
+
+    vector = vectorize_features(features).reshape(1, -1)
+    expected = bool(detector._model.predict(vector)[0] == -1)
+
+    result = detector.predict_one(features)
+
+    assert result.is_anomaly == expected
+    assert result.is_anomaly is True  # sanity: this is the file's own "weird" fixture
+
+
+def test_predict_one_is_anomaly_matches_raw_decision_sign_for_inlier() -> None:
+    """The literal condition the optimization relies on:
+    is_anomaly == (decision_function(vector)[0] < 0)."""
+    detector = AnomalyDetector()
+    detector.fit(generate_synthetic_feature_matrix())
+    features = _device_features()
+
+    vector = vectorize_features(features).reshape(1, -1)
+    raw_decision = float(detector._model.decision_function(vector)[0])
+
+    result = detector.predict_one(features)
+
+    assert result.is_anomaly == (raw_decision < 0)
+
+
+def test_predict_one_is_anomaly_matches_raw_decision_sign_for_clear_anomaly() -> None:
+    detector = AnomalyDetector()
+    detector.fit(generate_synthetic_feature_matrix())
+    features = _device_features(
+        tls_version=TLSVersion.TLS_1_0, key_size=512, forward_secrecy=False,
+        entropy=2.0, protocol=ProtocolType.HTTP, packet_size=30,
+    )
+
+    vector = vectorize_features(features).reshape(1, -1)
+    raw_decision = float(detector._model.decision_function(vector)[0])
+
+    result = detector.predict_one(features)
+
+    assert result.is_anomaly == (raw_decision < 0)
+
+
+@pytest.mark.parametrize("row_index", [0, 1, 25, 90, 150, 180, 185, 189])
+def test_sklearn_decision_function_sign_matches_predict_across_many_vectors(row_index: int) -> None:
+    """Ground-truths the mathematical equivalence predict_one()'s
+    optimization depends on -- decision_function(x) < 0 iff predict(x)
+    == -1 -- directly against the real, unmocked, fitted sklearn model,
+    swept across many real rows of ml.dataset's synthetic matrix (both
+    its normal block [0-179] and outlier block [180-189]), not just the
+    two handpicked DeviceFeatures cases above. This is what the
+    installed sklearn version's IsolationForest.predict() actually does
+    internally (confirmed by reading its source in the Pre-Pi audit),
+    not an assumption."""
+    matrix = generate_synthetic_feature_matrix()
+    detector = AnomalyDetector()
+    detector.fit(matrix)
+
+    vector = matrix[row_index].reshape(1, -1)
+    raw_decision = float(detector._model.decision_function(vector)[0])
+    sklearn_says_anomaly = bool(detector._model.predict(vector)[0] == -1)
+
+    assert (raw_decision < 0) == sklearn_says_anomaly
 
 
 def test_classifier_module_has_no_forbidden_dependencies() -> None:

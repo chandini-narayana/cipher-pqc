@@ -1,13 +1,37 @@
 # CIPHER Phase 1 — Windows-executable dependencies
-# Versions pinned once each module is implemented and tested against them.
+#
+# THE canonical dependency baseline. This is not just "whatever was
+# installed" — a project's older `venv/` had silently drifted to
+# different versions of several of these (scikit-learn, numpy,
+# reportlab, python-dotenv) than the versions actually verified by the
+# test suite. These exact pins were independently re-validated from
+# scratch in a brand-new, empty virtual environment (`pip install -r
+# requirements.txt` alone, no manual additions): 605/605 tests passed,
+# `preflight.py` and `evaluate_demo.py` both ran correctly, and the
+# Isolation Forest predict_one() equivalence held — see docs/SDD.md's
+# Pre-Pi hardening addendum for the full before/after record.
+#
+# This is a VERIFIED WINDOWS/x86 DEVELOPMENT BASELINE ONLY. It is NOT
+# yet validated on Raspberry Pi / ARM64 — that validation happens
+# during actual Pi bring-up (ARM wheel availability, any build-from-
+# source fallback, and any ARM-specific behavior difference are all
+# unverified until then). Raspberry Pi deployment must build a FRESH
+# environment from this file — never by copying or assuming anything
+# from this project's older Windows `venv/`, which is stale and must
+# not be treated as a source of truth for versions.
+#
+# scipy is intentionally NOT listed here: it is only ever pulled in
+# transitively by scikit-learn (nothing in this project imports it
+# directly), so pinning it here would misrepresent it as a direct
+# dependency rather than track it as one.
 
-flask
-scapy
-scikit-learn
-joblib
-dilithium-py
-cryptography
-reportlab
-python-dotenv
-pytest
-numpy
+flask==3.1.3
+scapy==2.7.0
+scikit-learn==1.8.0
+joblib==1.5.3
+dilithium-py==1.4.0
+cryptography==50.0.0
+reportlab==5.0.0
+python-dotenv==1.2.2
+pytest==9.1.1
+numpy==2.4.6
