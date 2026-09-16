@@ -148,7 +148,15 @@ def main() -> int:
     register_spa(app, WEB_DIR)
 
     print(f"CIPHER is running at http://{settings.flask_host}:{settings.flask_port}")
-    app.run(host=settings.flask_host, port=settings.flask_port)
+    # Explicit, not relying on Flask's own default-from-app.debug behavior:
+    # the presentation demo must never run Werkzeug's reloader, which
+    # spawns and manages a second worker subprocess of its own — a
+    # completely different, unrelated mechanism from the Windows venv-
+    # launcher behavior documented in launch_cipher.py (see its module
+    # docstring). debug was already False by default here (confirmed via
+    # the "Debug mode: off" banner Flask always printed); this just makes
+    # that guarantee explicit rather than implicit.
+    app.run(host=settings.flask_host, port=settings.flask_port, debug=False, use_reloader=False)
     return 0
 
 

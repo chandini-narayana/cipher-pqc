@@ -226,6 +226,65 @@ def test_demo_presentation_fixture_has_a_low_medium_and_high_device() -> None:
     assert RiskCategory.HIGH in categories
 
 
+def test_demo_presentation_fixture_exact_distribution_is_1_low_3_medium_1_high() -> None:
+    """The precise distribution the live demo presentation banner and
+    docs/DEMO_GUIDE.md's demo flow both rely on -- not just "some
+    spread," but exactly this one, re-verified against the real
+    pipeline (never hardcoded into runtime behavior)."""
+    from collections import Counter
+
+    packets = list(OfflinePcapSource(DEMO_PRESENTATION_PCAP_PATH).read_packets())
+    assert len(packets) == 5
+
+    counts = Counter()
+    for raw_packet in packets:
+        device = Device.first_contact(raw_packet.src_ip, raw_packet.timestamp)
+        fingerprint = fingerprint_packet(raw_packet.payload)
+        port_risk = port_risk_for_protocol(fingerprint.protocol)
+        assessment = assess_packet(raw_packet, device, port_risk, None, assessed_at=FIXED_ASSESSED_AT)
+        counts[assessment.final_category] += 1
+
+    assert counts[RiskCategory.LOW] == 1
+    assert counts[RiskCategory.MEDIUM] == 3
+    assert counts[RiskCategory.HIGH] == 1
+
+
+def test_demo_presentation_fixture_produces_five_assessments_and_four_reports_end_to_end(
+    tmp_path,
+) -> None:
+    """Runs the REAL end-to-end pipeline.runner.run_capture() -- not
+    just per-packet assess_packet() -- against the committed
+    presentation fixture, confirming the exact device/report counts
+    run_demo.py's own live banner reports: 5 devices assessed (1 LOW +
+    3 MEDIUM + 1 HIGH), 4 reports generated (every non-LOW device;
+    LOW is never flagged)."""
+    from enforcement.backends import NoOpIsolationBackend
+    from pipeline.runner import run_capture
+    from signing import generate_keypair
+
+    class _StaticPcapSource:
+        def __init__(self, packets):
+            self._packets = packets
+
+        def read_packets(self):
+            return iter(self._packets)
+
+    packets = list(OfflinePcapSource(DEMO_PRESENTATION_PCAP_PATH).read_packets())
+    public_key, secret_key = generate_keypair()
+
+    assessments, reports = run_capture(
+        _StaticPcapSource(packets),
+        None,
+        public_key,
+        secret_key,
+        NoOpIsolationBackend(),
+        report_output_dir=tmp_path,
+    )
+
+    assert len(assessments) == 5
+    assert len(reports) == 4
+
+
 def test_sample_pcap_is_unmodified_by_this_work() -> None:
     """Sentinel: tests/fixtures/sample.pcap must still contain exactly
     the 3 original yielded packets (2 filtered out) — Phase 15

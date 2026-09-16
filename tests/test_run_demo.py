@@ -31,7 +31,7 @@ def test_run_demo_reaches_server_startup_without_binding_a_port(tmp_path, monkey
 
     captured = {}
 
-    def fake_run(self, host=None, port=None):
+    def fake_run(self, host=None, port=None, **kwargs):
         captured["ran"] = True
         captured["host"] = host
         captured["port"] = port
@@ -58,7 +58,7 @@ def test_run_demo_defaults_to_the_demo_presentation_fixture_when_pcap_path_unset
 
     captured = {}
 
-    def fake_run(self, host=None, port=None):
+    def fake_run(self, host=None, port=None, **kwargs):
         captured["ran"] = True
 
     monkeypatch.setattr(Flask, "run", fake_run)
@@ -92,7 +92,7 @@ def test_run_demo_respects_an_explicit_pcap_path_override(tmp_path, monkeypatch)
 
     captured = {}
 
-    def fake_run(self, host=None, port=None):
+    def fake_run(self, host=None, port=None, **kwargs):
         captured["ran"] = True
 
     monkeypatch.setattr(Flask, "run", fake_run)
