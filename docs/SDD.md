@@ -972,6 +972,199 @@ Three of the five independently reach the raw-QRS≥7 isolation threshold via th
 
 ---
 
+## 32. Phase 2A Addendum — Controlled Labelled Evaluation & Metrics Foundation
+
+**Status:** complete and verified. **No change of any kind to the Quantum Risk Score formula, its weights, its category thresholds, the isolation threshold, the Risk Fusion rule, the Isolation Forest configuration or its training generator, packet fingerprinting, the entropy implementation, or the enforcement path.** This phase adds measurement only: one new package (`evaluation/`), one new labelled dataset, one new explicitly-invoked runner, and their tests. The only pre-existing file modified is `tests/conftest.py`, which gained one autouse fixture so the new gitignored pcap is generated on first use exactly like the Phase 15 fixtures.
+
+**Purpose.** The paper reviewers asked for stronger quantitative validation. This phase supplies the defensible part of that: deterministic Quantum Risk Score **specification conformance**, and **controlled security classification** against an a-priori external rubric, both in QRS-only mode. Isolation Forest quantitative evaluation (anomaly scores, ROC-AUC), and CPU/RAM and Raspberry Pi hardware benchmarking, are deliberately **not** in this phase.
+
+**The two kinds of ground truth are separate, and the security labels never come from CIPHER.** `tests/fixtures/labelled_evaluation_manifest.py` declares, per observation and before any packet is executed: (1) the expected per-component contributions, total score, category and isolation eligibility the frozen formula must produce; and (2) an `external_security_label` of SAFE / RISKY / EXCLUDED assigned from published standards — RFC 8996 (TLS 1.0/1.1 deprecated), RFC 8446 (TLS 1.3), NIST SP 800-52r2, and NIST SP 800-131A Rev. 2 (RSA ≥ 2048 bits). The label is never derived from the actual score, the expected score, a risk category, a fused category, or any anomaly signal. Labelling observations by the score under evaluation would make every resulting metric circular; this separation is what makes the classification figures mean anything.
+
+**EXCLUDED is a real answer, not a gap.** 6 of 30 observations carry no binary label, and are carried through conformance reporting while being dropped from every confusion matrix: both TLS 1.2 ClientHellos (SP 800-52r2 permits TLS 1.2 with approved suites, and one passively captured packet does not establish the negotiated suite), both RSA ≥ 2048 certificate messages (the key length is acceptable, but a Certificate message carries no version field, so the surrounding configuration is undetermined), the encrypted Application Data record, and the opaque OTHER payload. Forcing a binary label on any of these would have meant inventing ground truth the standards do not supply for an isolated packet. Forward secrecy is likewise excluded from the rubric: `fingerprint_packet()` always reports `forward_secrecy=False`, so it is a constant across the whole dataset and cannot discriminate — reported as a known limitation rather than used as a criterion.
+
+**The dataset deliberately does not reuse the Phase 15 known-safe fixture as its secure baseline.** That fixture puts an RFC 7685 `padding` extension into a *ServerHello* and fills it with high-entropy bytes; RFC 7685 padding is a ClientHello extension, its bytes are zero-filled, and a server does not echo it. The high-entropy filler also lifts measured entropy into the no-penalty band, which a real ServerHello of that size cannot reach. The Phase 15 fixture and its tests remain **untouched** for regression and continuity, but every TLS observation in the new dataset is built the way a real stack would send it — including a correctly zero-filled ClientHello padding variant, whose padding *lowers* measured entropy.
+
+**Dataset composition** (30 deterministic observations, one uniquely-addressed packet each, joined to the manifest by source IP rather than packet order; `tests/fixtures/evaluation_labelled_set.pcap`, gitignored and regenerated like every other evaluation fixture):
+
+| group | n | contents | external label |
+|---|---|---|---|
+| secure | 11 | realistic TLS 1.3: 3 ClientHello (X25519), 2 ClientHello (hybrid X25519MLKEM768), 2 zero-padded ClientHello, 2 ServerHello (X25519), 1 minimal ServerHello, 1 ServerHello (hybrid) | 11 SAFE |
+| moderate-risk | 9 | 2 TLS 1.2 ClientHello, RSA-2048 and RSA-3072 certificates, 3 cleartext HTTP (GET, response, credential POST), 2 MQTT CONNECT without TLS | 5 RISKY, 4 EXCLUDED |
+| high-risk | 8 | 2 TLS 1.0, 2 TLS 1.1, the existing deterministic 513-bit RSA certificate (reused unchanged), 3 Telnet negotiations | 8 RISKY |
+| indeterminate | 2 | TLS Application Data, opaque unclassified payload | 2 EXCLUDED |
+
+Totals: **11 SAFE, 13 RISKY, 6 EXCLUDED**, so binary metrics run on N=24. Two observations are not byte-reproducible by design — the RSA-2048 and RSA-3072 certificates use `rsa.generate_private_key()`, which is random — and are included anyway because their measured entropy (~7.39–7.49 and ~7.59–7.65 across sampled keys) sits far above the nearest 7.0 boundary, so their score is stable even though their bytes are not; a test asserts that margin on freshly generated keys. Per the approved decisions, no custom deterministic RSA prime generation was added, and the **RSA-1024 boundary case was omitted** rather than reported as unstable: its measured entropy of 6.998 sits 0.002 below the 7.0 boundary with a random key. Every other payload is byte-for-byte reproducible via the existing SHA-256-chain `_filler`, and no observation in the dataset sits within 0.1 bits/byte of an entropy boundary.
+
+**`evaluation/metrics.py` is standard-library only** (no numpy, scikit-learn or pandas — enforced by an AST test), keeping it trivially ARM64-safe. **Undefined is never zero:** every ratio returns `None` when its denominator is 0, because a precision of `0.0` asserts the system made positive predictions and got them all wrong, while `None` correctly says it made none. F1 is computed from precision and recall specifically so it inherits their undefinedness, and is also `None` when both are defined but sum to 0. `sklearn.metrics` is used to cross-check the hand-written formulas **in tests only**. ROC-AUC is deliberately absent: an integer score over a designed scenario set gives no meaningful ROC curve, and the continuous anomaly score for which it would be valid belongs to the later ML phase.
+
+**Measured results — Quantum Risk Score specification conformance (N=30): exact on every axis.** 30/30 exact score matches (mean absolute error 0.0, max 0), 30/30 per-component agreement on all five components independently, 30/30 protocol detection, 30/30 isolation-eligibility agreement, and a fully diagonal 3×3 category confusion matrix (8 LOW, 16 MEDIUM, 6 HIGH). Each observation's reported component decomposition is additionally cross-checked against the score the engine independently produced. **This measures implementation agreement with a frozen specification — it is not detection accuracy, and it is deliberately not evidence that the specification itself is correct.** Because the scenarios and the formula both derive from NIST-based criteria, conformance of this kind demonstrates correct, internally consistent implementation and nothing about external validity.
+
+**Measured results — controlled security classification (N=24), two deterministic operating points, neither introducing a new threshold:**
+
+| metric | `flagged_for_remediation` (final category ≠ LOW) | `high_risk_isolation_eligible` (raw QRS ≥ 7) |
+|---|---|---|
+| TP / TN / FP / FN | 13 / 8 / 3 / 0 | 6 / 11 / 0 / 7 |
+| accuracy | 87.50% | 70.83% |
+| precision | 81.25% | 100.00% |
+| recall (sensitivity) | 100.00% | 46.15% |
+| specificity | 72.73% | 100.00% |
+| F1 | 89.66% | 63.16% |
+| false-positive rate | 27.27% | 0.00% |
+| false-negative rate | 0.00% | 53.85% |
+| balanced accuracy | 86.36% | 73.08% |
+
+Both halves of each trade-off are reported, and no threshold was adjusted to improve any figure. **The remediation point misses nothing externally risky (FNR 0%) but carries a 27.27% controlled false-positive rate**, from exactly three realistic secure TLS 1.3 observations — the two correctly zero-padded ClientHellos and the minimal ServerHello — each penalized by the entropy component for a low-entropy payload whose configuration is sound. This is a genuine, reproducible property of the frozen formula on realistically-shaped handshake packets: on short or zero-padded records, the entropy term substantially measures record length rather than cryptographic quality. It is reported, not suppressed, and it is the single most useful finding of this phase. **The isolation point is conservative exactly as designed** — 100% precision and a 0% false-positive rate, so nothing externally safe is ever isolation-eligible, at the cost of a 53.85% false-negative rate: cleartext HTTP, unencrypted MQTT and TLS 1.1 all score 6 and therefore fall below the raw-QRS ≥ 7 threshold, despite being RISKY under RFC 8996 and SP 800-52r2. For a physical-isolation action that is a defensible bias, and it is consistent with the frozen Phase 14 rule that isolation reads the raw score and never a fused category.
+
+**QRS-only is enforced, not assumed.** `anomaly_detector=None` is passed at every call site in `evaluate_research.py`; a static test asserts the runner imports no `ml` module and never names `AnomalyDetector` or `load_anomaly_detector`, so its output cannot depend on whether a model artifact happens to exist on the machine running it. A per-observation test asserts `anomaly_assessment is None` and `final_category == risk_assessment.category` throughout. The fused category being identical to the QRS category here is a structural invariant of QRS-only mode (Section 19), reported as such and never as evidence about anomaly detection.
+
+**Zero runtime impact.** Nothing on the runtime import graph reaches `evaluation/`, the labelled manifest or the runner — verified by an AST test over every entry point (`main.py`, `run_demo.py`, `run_api.py`, `run_live_demo.py`, `launch_cipher.py`, `preflight.py`, `measure_startup.py`) and every runtime package, with a companion test that fails if that file list is ever silently emptied. `evaluation/` also imports no `risk`, `ml`, `fusion`, `fingerprint`, `entropy` or `pipeline` module, so measurement can never contain the logic it measures. The runner writes only to the gitignored `data/evaluation/research/` (`latest_qrs_evaluation.json` plus a per-observation `qrs_observations.csv`), with `results_dir` overridable so tests redirect to `tmp_path`.
+
+**Raspberry Pi compatibility: no new dependency, and `requirements.txt` is unchanged.** Everything added uses the standard library plus the already-pinned scapy/cryptography (fixture generation only) and, in tests only, scikit-learn. `psutil` was considered for the CPU/RAM work and deliberately not added, since that benchmarking is not part of this phase.
+
+**Test count: 649 → 1021** (+372: 41 metrics, 301 labelled-fixture/manifest, 30 runner). **1020 pass.** One pre-existing failure is unrelated to this phase: `tests/reports/test_pdf_generator.py::test_no_pdf_left_in_the_real_default_output_directory` is a sentinel asserting `data/reports/` holds no `CIPHER-*.pdf`, and that directory contains 24 PDFs left by earlier manual `run_demo.py`/`main.py` runs (newest dated 2026-09-22, predating this work). It fails in isolation with none of this phase's code loaded; clearing that directory resolves it, and nothing here writes to it.
+**Since resolved, with no code change.** Those pre-existing report artifacts were subsequently removed from `data/reports/`, and the sentinel passed again on the next run without any change to source, tests, thresholds or configuration — confirming the failure was environmental (stale files in a gitignored output directory) and never a defect. The current post-Phase-2C baseline is **1192 passed, 0 failed**.
+
+**Not implemented (deliberately, per the approved scope):** Isolation Forest quantitative evaluation of any kind, ROC-AUC, CPU/RAM measurement, throughput, packet-processing latency benchmarking, Raspberry Pi hardware measurement, and any repair of the Isolation Forest train/serve feature mismatch the Phase 15 audit documented — which remains an observed experimental result, untouched.
+
+---
+
+## 33. Phase 2B Addendum — Quantitative Evaluation of the Existing Isolation Forest
+
+**Status:** complete and verified. **Measurement only.** No change of any kind to `ml/dataset.py`, `ml/classifier.py`, `ml/train.py`, the Isolation Forest's parameters, the feature schema, the Quantum Risk Score, the fusion rule, any threshold, or the production pipeline. Nothing was tuned, retrained differently, repaired or redesigned, and the train/serve mismatch the Phase 15 audit found remains untouched — it is now quantified instead.
+
+**The model under evaluation is fitted in memory, never loaded from the artifact.** `ml/artifacts/anomaly_detector.joblib` is untracked, absent on a fresh clone, and the copy on the development machine was pickled by scikit-learn 1.9.0 while `requirements.txt` pins 1.8.0 (it loads with an `InconsistentVersionWarning`). Depending on it would make every figure below unreproducible. `evaluate_research.build_in_memory_detector()` instead regenerates the frozen training matrix from `ml/dataset.py` at the frozen seed and fits the frozen `AnomalyDetector` on it. Recorded with every run: scikit-learn 1.8.0, numpy 2.4.6, `contamination=0.05`, `random_state=42`, matrix shape (190, 12), `n_estimators=100`, `offset_=-0.6269`, and the 12 feature names. A static test asserts the runner contains no path that could read or write an artifact (no `joblib`, no `load_anomaly_detector`, no `model_path`, no `.save`/`.load` call), and a further test asserts the on-disk artifact's bytes are unchanged by a run.
+
+**ROC-AUC is confined to the continuous score, and confidence is never treated as a probability.** `evaluation/metrics.py::roc_auc` implements the Mann-Whitney form, `[#(s⁺>s⁻) + 0.5·#(s⁺=s⁻)] / (P·N)`, by direct pair enumeration, returns `None` when either class is absent, and reports `n_positive`, `n_negative`, `n_pairs` and `tied_pairs` alongside the value so an AUC leaning on the tie convention can be read as such. It rejects boolean scores outright, which is exactly the misuse of passing `is_anomaly` where `anomaly_score` belongs. It is computed only over `anomaly_score = -decision_function`, never over `is_anomaly`, a risk category, or `confidence`. No calibration metric (Brier score, log loss, reliability) is computed anywhere, because Isolation Forest is not a probabilistic estimator; a test asserts no such key appears in the report. `confidence` is reported under the field name `confidence_not_a_probability`, and a test confirms it is monotone in `anomaly_score` and therefore carries no additional ranking information.
+
+**Held-out set (Section A) reuses `ml/dataset.py` unmodified, with structural labels.** `tests/fixtures/ml_heldout_set.py` calls the existing generator at seed **1042** (training is 42) for 180 normal + 10 injected outlier rows. Labels come from which distribution the generator drew each row from, fixed before inference; tests verify the row-to-distribution correspondence independently from the feature *values* (entropy band, key size, protocol one-hot), so the labels do not rest on an unchecked assumption, and verify no held-out row appears in the training matrix.
+
+### Section A — synthetic feature-distribution evaluation (N=190)
+
+Perfect on every axis: TP=10, TN=180, FP=0, FN=0; accuracy, precision, recall, specificity, F1 and balanced accuracy all 100%; FPR and FNR both 0%; **ROC-AUC 1.0000** over 1800 pairs with zero ties; 190/190 distinct vectors. Anomaly scores separate cleanly with a gap: outliers +0.0335 to +0.1363, normals −0.1955 to −0.0156.
+
+**This is a feature-level result and nothing more.** The two synthetic distributions do not overlap on entropy at all (a test asserts `outlier_max < normal_min`), so this measures that Isolation Forest can separate two disjoint synthetic clusters — a property of the generated data at least as much as of the model. It is **not** real packet accuracy and **not** real network accuracy, and must never be reported as either.
+
+### Section B — pipeline-extracted controlled evaluation (N=24 binary, 30 total)
+
+Feature vectors are **captured as `assess_packet()` hands them to the model**, via a transparent recording proxy that delegates to the real detector. Nothing is hand-constructed: a static test asserts the runner never writes `DeviceFeatures(`, and another asserts the recorded objects re-vectorize to exactly the reported values. This is a stronger guarantee than rebuilding features alongside and hoping they agree.
+
+| metric | value |
+|---|---|
+| TP / TN / FP / FN | 13 / 1 / 10 / 0 |
+| accuracy | 58.33% |
+| precision | 56.52% |
+| recall (sensitivity) | 100.00% |
+| specificity | 9.09% |
+| F1 | 72.22% |
+| false-positive rate | 90.91% |
+| false-negative rate | 0.00% |
+| balanced accuracy | 54.55% |
+| **ROC-AUC** | **0.9371** (13 positive, 11 negative, 143 pairs, 0 tied) |
+
+**The central finding of this phase is the gap between those two facts: discrimination is high, the operating point is wrong.** An AUC of 0.9371 says the anomaly score *ranks* externally-risky observations above externally-safe ones well — SAFE scores run −0.0093 to +0.0255 (median +0.0088) against RISKY +0.0203 to +0.1068 (median +0.0623). But `is_anomaly` thresholds that score at zero, and the zero point was fixed by `offset_` during training on synthetic vectors that look nothing like pipeline vectors. The result is that 10 of 11 SAFE observations fall on the anomalous side, giving a 90.91% controlled false-positive rate and 9.09% specificity. The single SAFE observation the model does not flag is `tls13_server_hello_hybrid_pq`, the largest and highest-entropy secure record in the set — the one that most resembles the training-normal distribution. The model is therefore **not** "randomly wrong"; it is systematically mis-thresholded for the vectors CIPHER actually produces. Stating only the AUC would overstate the model, and stating only the specificity would understate it; both belong in the paper.
+
+All 13 RISKY observations are flagged (recall 100%, FNR 0%), which on a set where 23 of 24 observations are flagged carries little information. Of the 6 EXCLUDED observations, 3 are flagged: both TLS 1.2 ClientHellos (+0.0131) and the opaque payload (+0.0474); the two strong-RSA certificates (−0.0381, −0.0357) and the encrypted record (−0.0165) are not.
+
+### Train/serve feature-distribution comparison
+
+Per-feature summaries for `training_normal` (180), `training_outlier` (10), `pipeline_safe` (11), `pipeline_risky` (13) and `pipeline_excluded` (6), reported in the JSON and in `ml_feature_distribution.csv`. Three divergences are structural and fully explain Section A passing while Section B mis-thresholds:
+
+| feature | training normal | pipeline SAFE | pipeline RISKY |
+|---|---|---|---|
+| `key_size_observed` zero-fraction | 0.00 | **1.00** | 0.92 |
+| `key_size` median | 3072 | **0** | 0 |
+| `forward_secrecy` zero-fraction | 0.17 | **1.00** | 1.00 |
+| `shannon_entropy` median | 7.48 | 6.33 | 4.97 |
+| `packet_size` median | 863 | 319 | 129 |
+
+1. **Every training row carries both a TLS version and a key size; no real packet can.** A single packet is a Hello *or* a Certificate, and under TLS 1.3 the certificate is encrypted. So `key_size_observed` is 0 for 100% of pipeline SAFE vectors and 0% of training rows — a combination the forest never saw, and `key_size=0` sits *below* even the outlier range of 512–768.
+2. **`forward_secrecy` is 0 for 100% of all pipeline vectors**, because `fingerprint_packet()` always reports False, while 83% of training-normal rows have it set. Every real observation therefore looks like the training minority.
+3. **Entropy and payload length are both systematically lower** than training-normal, because handshake records are short and Shannon entropy is bounded by log2 of the payload length. A 127-byte ServerHello cannot reach the 7.0–8.0 band the generator drew normals from.
+
+### Section C — QRS-only versus fused, paired on the same 30 observations
+
+Escalated 20/30, unchanged 10. **10 externally SAFE observations were incorrectly escalated** (`tls13_client_hello_x25519_a/b/c`, `tls13_client_hello_hybrid_pq_a/b`, `tls13_client_hello_zero_padded_a/b`, `tls13_server_hello_x25519_a/b`, `tls13_server_hello_minimal`). 7 externally RISKY observations were escalated (3 HTTP, 2 MQTT, 2 TLS 1.1) — but all 7 were **already flagged** under QRS-only, so no remediation decision changed.
+
+Remediation flagging (`final_category != LOW`), paired on N=24:
+
+| metric | QRS-only | QRS + Isolation Forest | delta |
+|---|---|---|---|
+| TP / TN / FP / FN | 13 / 8 / 3 / 0 | 13 / 1 / 10 / 0 | — |
+| accuracy | 87.50% | 58.33% | −29.17 pp |
+| precision | 81.25% | 56.52% | −24.73 pp |
+| recall | 100.00% | 100.00% | 0 |
+| specificity | 72.73% | 9.09% | −63.64 pp |
+| F1 | 89.66% | 72.22% | −17.44 pp |
+| false-positive rate | 27.27% | 90.91% | +63.64 pp |
+| balanced accuracy | 86.36% | 54.55% | −31.82 pp |
+
+**The paired measurements do not support any claim that the existing Isolation Forest improves CIPHER.** Six metrics worsen, none improves, and recall was already saturated at 100% with no headroom to gain. The runner computes this verdict from the deltas rather than asserting it in prose, and a test fails if the verdict ever claims an improvement the numbers do not show.
+
+**Physical-isolation invariant verified.** Eligibility is identical with and without ML: the same 6 devices, no mismatches. This is checked three ways — through the report, observation-by-observation against the real `should_isolate()`, and by a test confirming that observations the model escalated to HIGH while scoring under 7 remain ineligible. `enforcement.decision.should_isolate()` reads the raw score and never `final_category`, so an ML-only escalation can never trigger a physical action. Quantum Risk Scores and categories are also bit-identical with the model attached.
+
+### Scope, outputs and limitations
+
+**Outputs** (all gitignored): `data/evaluation/research/latest_ml_evaluation.json`, `ml_observations.csv` (per observation: labels, score, category before and after fusion, and all 12 feature values), and `ml_feature_distribution.csv`. Phase 2A's `latest_qrs_evaluation.json` and `qrs_observations.csv` are unchanged, and a test asserts Phase 2A's figures are still produced strictly QRS-only.
+
+**Limitations that belong in the paper.** N=24 with an 13/11 split makes the AUC's confidence interval wide; a single ranking swap moves it by about 0.008, so 0.9371 should not be quoted as a precise value. The RISKY cohort also correlates with low entropy and short payloads, which is partly what the model keys on, so some of the ranking ability is confounded with the label definition rather than being independent evidence of anomaly detection. Section A's perfection reflects non-overlapping synthetic distributions. And every figure here is a controlled, deterministic synthetic/offline measurement — never real-world detection accuracy, production accuracy, general IoT accuracy, or a network-wide measurement.
+
+**Test count: 1021 → 1105** (+84: 22 ROC-AUC/value-summary, 16 held-out set, 46 Phase 2B runner). **All 1105 pass.** The `data/reports/` PDF sentinel that failed during Phase 2A now passes because that directory is empty; nothing in either phase writes to or deletes it.
+
+**Not implemented (deliberately, per the approved scope):** any change to the model, its features, its training data or its threshold; any alternative or additional ML algorithm; CPU/RAM benchmarking; throughput and packet-processing latency benchmarking; and Raspberry Pi hardware measurement.
+
+---
+
+## 34. Phase 2C Addendum — Controlled Offline Performance Benchmark
+
+**Status:** complete and verified on Windows; Raspberry Pi figures deliberately **not yet collected** (the code is written to run there unchanged, and will be measured by pulling this branch onto the Pi). **Performance only.** No change to the Quantum Risk Score, the Isolation Forest, the fusion rule, feature extraction, packet parsing, any threshold, enforcement, or report content.
+
+**A separate entry point, `evaluate_performance.py`.** `evaluate_research.py` answers "is the output correct" and must stay cheap and deterministic; benchmarking needs repetition counts, a warm-up discipline, subprocess launches, an optional long-running mode and a CLI. Merging them would force every correctness run to carry benchmark machinery. The measurement primitives live in `evaluation/benchmark.py`, standard-library only (an AST test asserts it imports nothing beyond `platform`, `statistics`, `sys`, `time`, `tracemalloc`, `resource`, `typing`), so **no new dependency was added and `requirements.txt` is unchanged** — notably no `psutil`.
+
+**Methodology.** Every benchmark runs over the Phase 2A controlled labelled dataset (30 deterministic offline packets), **read from disk once before any timing begins**, so no latency figure includes file I/O or pcap parsing; device resolution and port-risk lookup are also hoisted out of the timed region. Timing uses `time.perf_counter_ns()`, with 2 untimed warm-up calls per packet and then 30 timed repetitions per packet, giving n=900 per latency benchmark. Reported for each: n, mean, median, p95, p99, min, max and standard deviation. `p99` is withheld below 100 samples, where a nearest-rank p99 is merely the maximum. The percentile convention matches the project's existing `evaluate_demo.py` helper rather than introducing a second definition. QRS-only and QRS+Isolation Forest are measured over the same packets in the same order, so **ML overhead is a paired per-observation difference**, not a difference of independent means.
+
+### Measured results — Windows development machine
+
+Platform recorded with the results: Windows 11 (10.0.26200), AMD64, 64-bit, Intel64 Family 6 Model 186, CPython 3.12.0, scikit-learn 1.8.0, numpy 2.4.6.
+
+| benchmark | n | mean | median | p95 | p99 | max |
+|---|---|---|---|---|---|---|
+| QRS-only assessment | 900 | 0.0432 ms | 0.0304 ms | 0.0889 ms | 0.1111 ms | 0.1432 ms |
+| QRS + Isolation Forest assessment | 900 | 4.9397 ms | 4.7349 ms | 6.0949 ms | 6.7114 ms | 7.3856 ms |
+| **Incremental ML overhead (paired)** | 900 | **4.8965 ms** | 4.7013 ms | 6.0531 ms | 6.6367 ms | 7.3410 ms |
+| Full pipeline, QRS-only | 900 | 0.0476 ms | 0.0372 ms | 0.0936 ms | 0.1006 ms | 0.1946 ms |
+| Full pipeline, with Isolation Forest | 900 | 5.0185 ms | 4.7214 ms | 6.1246 ms | 6.9617 ms | 62.8954 ms |
+| Software enforcement decision | 900 | 0.0005 ms | 0.0002 ms | 0.0017 ms | 0.0019 ms | 0.0095 ms |
+| Report generation (signed 3-page PDF) | 20 | 53.8097 ms | 48.3207 ms | 83.5158 ms | n/a | 94.8502 ms |
+| Startup (subprocess, cold) | 3 | 3.352 s | — | 3.398 s | — | 3.398 s |
+
+**Isolation Forest inference dominates per-packet cost by roughly two orders of magnitude**: 4.90 ms of added latency against a 0.043 ms deterministic path, and it was slower in **900 of 900 paired observations**. Taken with Phase 2B — where fusion improved no controlled remediation metric — the model currently costs about 114x the deterministic path's latency while degrading measured classification on this controlled set. That is a finding for the paper, not a change made here.
+
+**Throughput** (labelled *single-threaded controlled offline throughput*, never network throughput, line-rate performance or production capacity): 21,604.6 assessments/s QRS-only, versus 204.9 assessments/s with the Isolation Forest attached.
+
+**Process CPU utilization**: 0.983 (98.3% of one logical core) QRS-only and 0.987 with the model — consistent with a single-threaded CPU-bound workload. This is process CPU utilization where 1.0 is approximately one logical core fully busy, **never whole-system CPU usage**.
+
+**A real methodological defect was found and fixed during this phase.** The first implementation measured CPU over whichever interval the requested pass count happened to take. For QRS-only that was ~23 ms, and it produced a ratio of **1.387** — impossible for single-threaded work, and an artifact of Windows' `GetProcessTimes` updating on a ~15.6 ms scheduler tick. Two corrections: the throughput/CPU interval now runs to a minimum wall-clock floor (default 1.0 s), extending the pass count as needed and reporting the actual count; and `cpu_utilization()` now carries the clock resolution, the minimum reliable interval and a `reliable` flag, with an **absolute 0.25 s floor** because the resolution `time.get_clock_info()` advertises (sub-microsecond on Windows) badly understates the platform's real CPU-time accounting granularity. Under-sampled ratios are now printed as `[indicative only — interval too short]` rather than reported as fact.
+
+**Memory.** Peak RSS uses `resource.getrusage(RUSAGE_SELF).ru_maxrss`, with a unit conversion helper that is unit-correct per platform — **KiB on Linux (so ×1024 on the Raspberry Pi)**, already bytes on macOS, and `None` on anything else rather than a guess; getting this wrong misreports memory by three orders of magnitude, so it is tested directly. On Windows the standard library exposes no reliable RSS figure, so it is reported as **not available with a stated reason** rather than adding a dependency for one number; the Pi run will populate it. Python heap peak is `tracemalloc`, measured in a **separate pass** because tracemalloc materially slows what it observes, and it therefore yields no timing: 0.132 MiB for one pass over the dataset, explicitly Python-managed allocations only (excluding interpreter overhead and numpy's C buffers).
+
+**Startup reuses `measure_startup.measure_startup()` unchanged**, so the boundary is not redefined: launching `python run_demo.py` as a subprocess on port 5099 with a temporary cwd, polling `GET /api/health` until it first returns 200 OK — covering interpreter start, all imports, key and model loading, pcap processing and Flask binding the port, plus the 0.1 s poll granularity. A test asserts this module imports no HTTP or subprocess machinery of its own, so no competing definition can drift in. A startup failure is recorded in an `error` field rather than aborting the run.
+
+**Report-generation latency** writes into a `tempfile.TemporaryDirectory()` with an ephemeral keypair and a distinct report id per repetition, so a user's real `data/reports/` is never touched — asserted by a test that compares that directory's contents before and after.
+
+**Optional sustained run**, off by default and never executed by pytest: `--stability-iterations N` or `--duration-seconds N` repeatedly processes the deterministic packet set, reporting per-pass latency, sustained throughput, process CPU and a **drift comparison between the first and last tenth of the run** — which is what will expose thermal throttling on the Pi, where a whole-run mean would average it away. Verified working: 60 passes, 1800 assessments in 8.83 s, 203.9 assessments/s sustained, first-window 146.4 ms against last-window 145.0 ms, so no drift on this machine.
+
+**Raspberry Pi readiness.** Nothing is hard-coded — a test asserts the source contains no Windows or Pi path, CPU model, architecture string or interface name. Every platform value is read at runtime and recorded in the results JSON (`system`, `release`, `machine`, `architecture`, `processor`, `platform`, Python, scikit-learn and numpy versions), and the CSV carries platform rows, so a Windows run and a Pi run can be concatenated and compared directly. The hostname is deliberately not recorded, only a boolean that one exists.
+
+**Outputs** (gitignored): `data/evaluation/research/latest_performance.json` and `performance_metrics.csv` (one metric per row, for cross-platform concatenation).
+
+**Limitations.** These figures are **load-sensitive on a shared desktop**: an earlier run of the same benchmark on this machine measured QRS+IF at 16.58 ms mean against 4.94 ms in the final run, a 3.4x spread driven entirely by machine state, with QRS-only moving in proportion. Absolute values should therefore be read as one machine under one load, while the *ratio* between QRS-only and QRS+IF held across both runs. The full-pipeline maximum of 62.9 ms is a single scheduling outlier, which is why median and p95 are reported alongside the mean. Report generation at n=20 has no meaningful p99. Startup at n=3 is a small sample, chosen because each measurement launches a real subprocess. Peak RSS is unavailable on Windows. And **physical isolation latency remains unmeasured**: no hardware enforcement backend exists, so the enforcement figure above times only the software decision and the NoOp backend, and must never be presented as network isolation latency.
+
+**Test count: 1105 → 1192** (+87: 46 benchmark primitives, 41 benchmark runner). **All 1192 pass.** No long-running benchmark executes in pytest: every test uses 1–5 repetitions, stubs the startup subprocess, and bounds the sustained run at 2 iterations or 0.2 s.
+
+**Not implemented (deliberately):** Raspberry Pi measurements, multi-threaded or concurrent throughput, live-capture performance, network-level measurement, and any change to the scoring, model or enforcement behavior being measured.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

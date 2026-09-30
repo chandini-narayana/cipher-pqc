@@ -32,6 +32,10 @@ from tests.fixtures.generate_evaluation_fixtures import (
 )
 from tests.fixtures.generate_evaluation_fixtures import main as generate_evaluation_fixtures
 from tests.fixtures.generate_fixtures import SAMPLE_PCAP_PATH, main as generate_fixtures
+from tests.fixtures.generate_labelled_evaluation_fixtures import LABELLED_SET_PCAP
+from tests.fixtures.generate_labelled_evaluation_fixtures import (
+    main as generate_labelled_evaluation_fixtures,
+)
 
 _EVALUATION_FIXTURE_PATHS = (
     SECURE_TLS13_PCAP,
@@ -56,3 +60,14 @@ def _ensure_sample_pcap_exists() -> None:
 def _ensure_evaluation_fixtures_exist() -> None:
     if not all(path.exists() for path in _EVALUATION_FIXTURE_PATHS):
         generate_evaluation_fixtures()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_labelled_evaluation_fixture_exists() -> None:
+    """The Phase 2A labelled dataset (docs/SDD.md's Phase 2A addendum),
+    generated on first use exactly like the Phase 15 fixtures above and
+    gitignored for the same reason. Kept a separate fixture from
+    _ensure_evaluation_fixtures_exist so neither generator's absence or
+    failure can mask the other's."""
+    if not LABELLED_SET_PCAP.exists():
+        generate_labelled_evaluation_fixtures()
