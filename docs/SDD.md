@@ -1296,6 +1296,44 @@ Running it twice adds nothing; a partially-present rule set is completed rather 
 
 ---
 
+## 39. Phase 3F Addendum — Optional SSD1306 OLED Status Display
+
+**Purpose.** Render state the pipeline already produced on an optional SSD1306 I2C panel. Output only: nothing in `hardware/` computes a Quantum Risk Score, runs or reads the Isolation Forest, applies the fusion rule, or decides isolation eligibility. QRS, the threshold of 7, the fusion rule, iptables enforcement, capture semantics, the API and the frontend are all unchanged. GPIO status LEDs remain unimplemented — a separate, later phase.
+
+**`hardware/display.py` — the boundary.** `StatusDisplay` is an ABC with `start() -> bool`, `show_lines(lines)` and `close()`, plus `show_ready`/`show_assessment`/`show_summary` convenience wrappers shared by every implementation. Implementations are **contractually forbidden from raising** for an ordinary hardware problem; `available` reports whether output is actually reaching a panel, so a caller logs the truth rather than assuming success. `NoOpStatusDisplay` is the default everywhere: it imports no hardware library (statically asserted), touches no bus, never fails, and reports `available == False` even after a successful `start()` — keeping "CIPHER ran" and "a panel showed something" separate facts, the same way `NoOpIsolationBackend` separates decided from enforced.
+
+**Frames are pure data.** `build_ready_frame`, `build_assessment_frame` and `build_summary_frame` return plain lists of short strings, clipped to 5 lines × 21 characters for a 128x64 panel, so the exact content shown is unit-testable with no hardware and no driver present. The assessment frame reads `device.ip`, `risk_assessment.risk_score` (the raw deterministic score, never recomputed) and `final_category` (the already-fused category, never re-fused) straight off the `DeviceAssessment`:
+
+```
+CIPHER
+Device: 192.168.50.21
+QRS: 7/10
+Risk: HIGH
+Isolation: ISOLATED
+```
+
+**Isolation labels are a pure field mapping**, in the one order that cannot overclaim: no object → `N/A`; `requested is not True` → `NONE`; `enforced is True` → `ISOLATED`; otherwise the backend's own `enforcement_capable` decides `FAILED` (a real backend that could not enforce) versus `NOOP` (a deliberately non-enforcing runtime). **`ISOLATED` is never shown unless the backend set `enforced=True`.** A HIGH-risk device with no isolation state shows `Isolation: N/A`, and an ML-escalated HIGH at raw QRS 5 shows `QRS: 5/10` with no isolation — both asserted by test. `describe_isolation` takes exactly one argument, so there is no parameter through which QRS, a category or an anomaly could reach it, and a structural test asserts the module references no scoring, fusion or ML identifier.
+
+**`hardware/ssd1306_display.py` — the optional adapter.** The only module in CIPHER that touches a hardware library, and it does so **lazily**: `luma.oled` is imported inside `start()`, never at module level (asserted structurally, and by the fact the Windows suite imports it). Importing this module without the driver installed is therefore safe and cannot break an unrelated runtime. **I2C only; no SPI** (also asserted structurally). Bus number and address are constructor arguments defaulting to bus 1 and `0x3C` — the standard Raspberry Pi I2C bus and the address most SSD1306 breakouts ship with; both are overridable because a minority of boards are strapped to `0x3D`. No other board-specific value is assumed anywhere.
+
+**Failure handling, all non-fatal and all tested.** A missing driver, an absent or disabled bus (`/dev/i2c-1` not found), an I2C permission denial, a failed initialization and a failed write are each logged once and swallowed. A failed `start()` returns `False` and every later frame is dropped silently. A failed *write* marks the panel unavailable for the rest of the run, so a broken panel costs exactly one write attempt rather than one per packet. `close()` survives a failing `clear()` and is idempotent. The I2C-unavailable warning names `i2cdetect` so the operator knows what to check.
+
+**Performance.** Frames are throttled by `min_interval_seconds` (default 1.0s) and identical consecutive frames are skipped entirely, so a fast capture cannot flood the bus. No background thread, no queue, no event bus was added.
+
+**Runtime integration — one additive, passive pipeline hook.** `run_capture()` gained `assessment_observer: Optional[Callable[[DeviceAssessment], None]] = None`. It is called after representative selection, its return value is discarded, and `_notify_observer()` wraps it in its own `try/except` — so an observer can neither change nor delay an assessment, an isolation decision or a report, and an exploding observer costs nothing (asserted: both devices still assessed, warning logged). With no observer supplied, `pipeline/runner.py` behaves exactly as before. This is the only pipeline change in the phase; capture, enforcement and reporting are untouched.
+
+**Activation — explicit, Linux-only, never implicit.** `run_pi_live.py --display {none,oled}` defaults to `none`, also readable as `CIPHER_DISPLAY` (flag wins), matching the existing `--interface`/`--enforcement` style. `oled` on a non-Linux host logs a warning and falls back to `NoOpStatusDisplay` rather than reaching for a bus. Lifecycle: build → `start()` → ready frame → live per-assessment frames during capture → per-device final frames (now carrying the isolation state attached at end of capture) → run summary → `close()`. The final frames and shutdown run from a `finally` block, so an interrupted or failed run leaves a `Status: STOPPED` frame instead of a frozen mid-capture one. Every lifecycle call goes through `_safe_display()`, defence in depth so that even a contract-violating display cannot fail the run. The summary's `Isolated:` count includes only assessments the backend itself marked `enforced`. `main.py`, `run_api.py`, `run_demo.py` and `run_live_demo.py` are unmodified and compose no display.
+
+**No new dependency.** `requirements.txt` is unchanged, and deliberately so: it is documented there as a verified Windows/x86 baseline, and `luma.oled` is a Raspberry-Pi-only extra needed by exactly one optional code path. It is installed on the Pi, when the panel is actually wired, with `pip install luma.oled`; until then `--display oled` simply reports the driver unavailable and the run continues. No overlapping display library was added, and the whole test suite runs without the driver present.
+
+**Test count: 1531 → 1612** (+81: 31 display/frame/mapping, 29 SSD1306 adapter via an injected fake device and fake canvas, 21 pipeline-observer and run_pi_live composition). **All 1612 pass.** No existing test was modified. Nothing requires hardware, a driver, an I2C bus or root.
+
+**NOT VALIDATED ON HARDWARE — stated plainly, and guarded by a test.** No SSD1306 panel has been wired or driven by this code. The pin map in `docs/hardware_manual` remains PENDING, so the wiring, the electrical behaviour, the real `luma.oled` call sequence, panel legibility at this font size, and I2C timing under load are all unverified. The adapter's docstring carries `NOT VALIDATED ON HARDWARE` and a test asserts that string is still there, so the claim cannot be quietly removed without the test failing. The injected-fake tests prove the command/data flow and every failure path, not the hardware.
+
+**Not implemented (deliberately):** GPIO status LEDs, buttons or any input control, SPI, a second display technology, a hardware event bus, a background rendering thread, a database, and any change to QRS weights/thresholds, the isolation threshold, Isolation Forest, the fusion rule, the model artifacts, capture semantics, the enforcement policy, the API shape or the frontend.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

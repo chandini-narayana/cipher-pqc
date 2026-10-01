@@ -42,6 +42,14 @@ timing requirement than the Execution Report's detection-to-isolation
 target. `isolation_backend` is injected by the caller (main.py /
 run_api.py); this module never constructs a hardware backend itself.
 
+`assessment_observer` (Phase 3F, optional and None by default) is a
+purely passive hook: each freshly-produced DeviceAssessment is handed to
+it after representative selection, its return value is discarded, and any
+exception it raises is logged and swallowed. It exists so the Raspberry
+Pi status display can show live progress; it can neither change nor
+delay an assessment, an isolation decision or a report, and with no
+observer supplied this module behaves exactly as before.
+
 Phase 3B isolation-state propagation (see docs/SDD.md's Phase 3B
 addendum): each isolation attempt's `IsolationOutcome` is recorded per
 device IP for the duration of the run and, after EOF but *before* report
@@ -56,7 +64,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 from capture.base import CaptureSource
 from capture.raw_packet import RawPacket
@@ -91,6 +99,7 @@ def run_capture(
     isolation_backend: IsolationBackend,
     risk_isolation_threshold: int = DEFAULT_RISK_ISOLATION_THRESHOLD,
     report_output_dir: Union[str, Path] = DEFAULT_REPORT_OUTPUT_DIR,
+    assessment_observer: Optional[Callable[[DeviceAssessment], None]] = None,
 ) -> Tuple[List[DeviceAssessment], List[Tuple[Path, ReportMetadata]]]:
     """Run one full pass over `capture_source`, isolating (per
     `isolation_backend`) every device whose raw QRS reaches
@@ -153,6 +162,7 @@ def run_capture(
                 risk_isolation_threshold,
                 enforcement_attempted_ips,
                 isolation_by_ip,
+                assessment_observer,
             )
         except Exception:  # noqa: BLE001 - one bad packet must not abort the run
             logger.error(
@@ -190,6 +200,7 @@ def _process_packet(
     risk_isolation_threshold: int,
     enforcement_attempted_ips: Set[str],
     isolation_by_ip: Dict[str, IsolationStatus],
+    assessment_observer: Optional[Callable[[DeviceAssessment], None]] = None,
 ) -> None:
     device = _resolve_device(raw_packet, devices)
 
@@ -207,6 +218,8 @@ def _process_packet(
     )
 
     _update_representative(representatives, device.ip, assessment)
+
+    _notify_observer(assessment_observer, assessment)
 
 
 def _maybe_enforce_isolation(
@@ -277,6 +290,31 @@ def _maybe_enforce_isolation(
         outcome.enforced,
         outcome.reason,
     )
+
+
+def _notify_observer(
+    observer: Optional[Callable[[DeviceAssessment], None]], assessment: DeviceAssessment
+) -> None:
+    """Hand a freshly-produced assessment to an optional, purely passive
+    observer — currently the Raspberry Pi status display.
+
+    Deliberately shaped so it cannot affect anything: the observer gets a
+    read-only view of an already-final assessment, its return value is
+    discarded, and any exception it raises is logged and swallowed here. An
+    output device that misbehaves must never cost a packet, an isolation
+    decision or a report. There is no observer by default, so every
+    existing caller's behavior is bit-for-bit unchanged.
+    """
+    if observer is None:
+        return
+    try:
+        observer(assessment)
+    except Exception:  # noqa: BLE001 - an output device is never allowed to break the run
+        logger.warning(
+            "Assessment observer failed for device %s; continuing.",
+            assessment.device.ip,
+            exc_info=True,
+        )
 
 
 def _attach_isolation_state(

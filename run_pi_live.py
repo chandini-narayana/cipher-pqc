@@ -63,7 +63,8 @@ import os
 import platform
 import sys
 from dataclasses import replace
-from typing import List, Optional, Sequence
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
 
 from capture.network_live_source import (
     DEFAULT_PACKET_LIMIT,
@@ -81,8 +82,10 @@ from enforcement import (
 )
 from enforcement.backends import IsolationBackend
 from enforcement.subprocess_runner import SubprocessCommandRunner
+from hardware import NoOpStatusDisplay, SSD1306StatusDisplay, StatusDisplay
 from ml.loading import load_anomaly_detector
 from models.device_assessment import DeviceAssessment
+from models.report_metadata import ReportMetadata
 from pipeline.runner import run_capture
 from signing import load_or_create_keypair
 from utils.exceptions import CipherError
@@ -139,6 +142,17 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--display",
+        choices=("none", "oled"),
+        default=None,
+        help=(
+            "Status display. 'none' (the default) renders nothing. 'oled' drives an "
+            "SSD1306 panel over I2C on a Raspberry Pi; it is optional, output-only, "
+            "and a display fault never affects capture or enforcement. May also be "
+            "given as the CIPHER_DISPLAY environment variable."
+        ),
+    )
+    parser.add_argument(
         "--filter",
         dest="bpf_filter",
         default=None,
@@ -183,6 +197,28 @@ def _build_isolation_backend(mode: str) -> IsolationBackend:
     # Constructing it here, explicitly, is what makes real enforcement
     # possible at all - no backend reaches it on its own.
     return IptablesIsolationBackend(command_runner=SubprocessCommandRunner())
+
+
+def _build_status_display(mode: str) -> StatusDisplay:
+    """Construct the selected status display.
+
+    The real panel is explicit and Linux-only, for the same reason the
+    iptables backend is: a Windows run (or a Windows test that imports this
+    module) must not reach for an I2C bus. A display is never enabled
+    implicitly, and `NoOpStatusDisplay` is the default.
+    """
+    if mode != "oled":
+        return NoOpStatusDisplay()
+
+    if platform.system() != "Linux":
+        logger.warning(
+            "--display oled requires Linux; this host reports %r. Continuing with "
+            "no status display.",
+            platform.system(),
+        )
+        return NoOpStatusDisplay()
+
+    return SSD1306StatusDisplay()
 
 
 def _print_disclaimer(
@@ -230,6 +266,48 @@ def _print_results(assessments: List[DeviceAssessment], report_count: int, count
         )
 
 
+def _safe_display(action: str, call, *args) -> None:
+    """Call a display method, swallowing anything it raises.
+
+    Every CIPHER display implementation is contractually forbidden from
+    raising, so this is defence in depth rather than expected flow: the
+    display is an optional output device, and not even a misbehaving one
+    may take down a capture run.
+    """
+    try:
+        call(*args)
+    except Exception:  # noqa: BLE001 - an output device never fails the run
+        logger.warning("Status display %s failed; continuing without it.", action, exc_info=True)
+
+
+def _show_final_frames(
+    display: StatusDisplay,
+    assessments: Optional[List[DeviceAssessment]],
+    reports: Optional[List[Tuple[Path, ReportMetadata]]],
+) -> None:
+    """Show each device's final state — now carrying the isolation state
+    that is attached at end of capture — then a run summary.
+
+    `isolated_count` counts only assessments the backend itself marked
+    `enforced`; nothing here judges whether isolation should have happened.
+    Called from a finally block, so an interrupted or failed run leaves the
+    panel in a sane state instead of frozen mid-capture.
+    """
+    if assessments is None:
+        display.show_lines(["CIPHER", "Status: STOPPED"])
+        return
+
+    for assessment in sorted(assessments, key=lambda a: a.device.ip):
+        display.show_assessment(assessment)
+
+    isolated_count = sum(
+        1
+        for assessment in assessments
+        if assessment.isolation is not None and assessment.isolation.enforced
+    )
+    display.show_summary(len(assessments), len(reports or []), isolated_count)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
 
@@ -258,6 +336,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
 
+    display_mode = (args.display or os.environ.get("CIPHER_DISPLAY") or "none").lower()
+    if display_mode not in ("none", "oled"):
+        print(
+            f"Unrecognized display mode {display_mode!r}. Expected 'none' or 'oled'.",
+            file=sys.stderr,
+        )
+        return 2
+
     settings = load_settings()
     configure_logging(settings)
     # So /api/health and any report metadata reflect what actually ran.
@@ -265,6 +351,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     settings = replace(settings, capture_mode="live", live_interface=interface)
 
     _print_disclaimer(interface, args.timeout, args.packet_limit, enforcement_mode)
+
+    # Output-only, optional, and never fatal: if the panel cannot be opened
+    # the run continues with no display at all.
+    display = _build_status_display(display_mode)
+    _safe_display("start", display.start)
+    _safe_display("ready frame", display.show_ready, interface, enforcement_mode)
+    assessments: Optional[List[DeviceAssessment]] = None
+    reports: Optional[List[Tuple[Path, ReportMetadata]]] = None
 
     try:
         isolation_backend = _build_isolation_backend(enforcement_mode)
@@ -284,6 +378,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             secret_key,
             isolation_backend,
             risk_isolation_threshold=settings.risk_isolation_threshold,
+            # pipeline.runner wraps every observer call in its own
+            # try/except, so a display fault here cannot cost a packet.
+            assessment_observer=display.show_assessment,
         )
     except CipherError as exc:
         logger.error("Live capture run failed.", exc_info=True)
@@ -292,6 +389,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
+    finally:
+        # Runs on success, failure and interrupt alike, so the panel never
+        # keeps showing a stale mid-capture frame.
+        _safe_display("final frames", _show_final_frames, display, assessments, reports)
+        _safe_display("shutdown", display.close)
 
     _print_results(assessments, len(reports), capture_source.counters)
     return 0
