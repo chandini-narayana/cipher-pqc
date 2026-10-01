@@ -22,3 +22,10 @@ tests/fixtures/*.pcap
 # Generated ML model artifacts
 ml/artifacts/*.joblib
 ml/artifacts/candidates/*.joblib
+
+# Generated ML model artifacts
+ml/artifacts/*.joblib
+ml/artifacts/candidates/*.joblib
+
+# Generated demo results
+demo_results/
