@@ -19,3 +19,6 @@ ml/artifacts/*.pkl
 
 tests/fixtures/*.pcap
 !tests/fixtures/demo_presentation.pcap
+# Generated ML model artifacts
+ml/artifacts/*.joblib
+ml/artifacts/candidates/*.joblib

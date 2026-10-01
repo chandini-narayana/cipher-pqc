@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CIPHER — Raspberry Pi Hardware Assembly &amp; Deployment Manual</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="book">
+
+<!-- ============================================================ -->
+<!-- PAGE 1 — COVER -->
+<!-- ============================================================ -->
+<div class="page cover">
+  <div>
+    <div class="top-lockup"><span class="dot"></span><span class="eyebrow">Hardware Assembly &amp; Deployment Manual</span></div>
+    <h1>CIPHER</h1>
+    <div class="full-name">Cryptographic Intelligence for Post-quantum Hazard Evaluation and Readiness Assessment</div>
+    <div class="manual-title">Raspberry Pi Hardware Assembly &amp; Deployment Manual</div>
+    <div style="display:flex; justify-content:center; margin: 4mm 0 10mm 0;">
+      <img src="diagrams/cover-emblem.svg" style="width:46mm; height:46mm;">
+    </div>
+    <div class="spec-grid">
+      <div class="spec-card">
+        <div class="k">Target Hardware</div>
+        <div class="v">Raspberry Pi 4 Model B — 4GB</div>
+      </div>
+      <div class="spec-card">
+        <div class="k">Network Configuration</div>
+        <div class="v">1 × Built-in Wi-Fi (management)<br>1 × External USB Monitor Adapter</div>
+      </div>
+      <div class="spec-card">
+        <div class="k">Software Baseline</div>
+        <div class="v">CIPHER v0.1.0-dev — Phase 1 complete (Windows)</div>
+      </div>
+      <div class="spec-card">
+        <div class="k">Manual Scope</div>
+        <div class="v">Physical assembly + Pi bring-up of the existing pipeline</div>
+      </div>
+    </div>
+  </div>
+  <div class="footer-strip">
+    <div>
+      <div>Manual version <b>1.1</b> &nbsp;·&nbsp; Generated <b>28 September 2026</b> &nbsp;·&nbsp; Consistency-audited <b>1 October 2026</b></div>
+      <div>Source of truth: repository <code>cipher-pqc</code> at time of writing</div>
+    </div>
+    <div style="text-align:right;">
+      <div class="status-chip">Pi bring-up verified · monitor-mode ingestion pending</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 2 — LEGEND & CONVENTIONS -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Front Matter</span></div>
+    <div class="ph-title">Legend, Conventions &amp; Document Info</div>
+  </div>
+  <div class="page-body">
+    <h2 class="pt">How to read this manual</h2>
+    <p class="lead">This manual follows one rule above all others: <b>it never invents hardware, GPIO pins, network architecture,
+    or software behaviour that does not already exist in the CIPHER repository.</b> Every page is labelled with one of the
+    status markers below, taken directly from a repository audit performed before this manual was written (see the
+    Repository Audit Summary page).</p>
+
+    <div class="legend-row"><span class="pill pill-impl">Currently Implemented</span>
+      <span class="desc">Verified, working code exists in the repository today and is covered by the test suite. Safe to rely on as-is.</span></div>
+    <div class="legend-row"><span class="pill pill-hw">Hardware Integration Pending</span>
+      <span class="desc">The physical component (OLED, LEDs) is part of the approved bill of materials, but no CIPHER driver code exists yet to use it.</span></div>
+    <div class="legend-row"><span class="pill pill-sw">Software Implementation Pending</span>
+      <span class="desc">The capability (live capture, Linux enforcement, systemd) is architecturally planned but not yet coded.</span></div>
+    <div class="legend-row"><span class="pill pill-gpio">GPIO Assignment Pending</span>
+      <span class="desc">No pin numbers are frozen or approved anywhere in the repository. Do not wire until a future revision assigns them.</span></div>
+    <div class="legend-row"><span class="pill pill-info">Reference</span>
+      <span class="desc">A factual hardware specification (e.g. the Raspberry Pi's own pin numbering) shown for context only — not a CIPHER decision.</span></div>
+
+    <h2 class="pt" style="margin-top:6mm;">Visual conventions</h2>
+    <div class="cols2" style="height:auto;">
+      <div>
+        <div class="step"><div class="step-num">1</div><div class="step-body"><div class="st">Numbered steps</div>
+        <div class="sd">Large circular numbers mark one physical action at a time, LEGO-manual style. Complete each step before moving to the next.</div></div></div>
+        <ul class="checklist"><li>Checklists confirm a state before you proceed.</li><li>An empty box means "verify this yourself."</li></ul>
+      </div>
+      <div>
+        <div class="panel panel-warning"><div class="ptitle">Caution</div>Amber panels flag a step that needs care but is not dangerous if done correctly.</div>
+        <div class="panel panel-danger"><div class="ptitle">Stop / Danger</div>Red panels mark an action that can damage hardware or break the project's fixed constraints.</div>
+        <div class="panel panel-success"><div class="ptitle">Expected Result</div>Green panels describe what you should see if a step worked.</div>
+      </div>
+    </div>
+
+    <h2 class="pt" style="margin-top:6mm;">Document information</h2>
+    <table class="tbl compact">
+      <tr><th style="width:34%;">Field</th><th>Value</th></tr>
+      <tr><td>Manual version</td><td>1.1 (consistency-audited 1 October 2026)</td></tr>
+      <tr><td>Generated</td><td>28 September 2026</td></tr>
+      <tr><td>Source repository state</td><td><code>cipher-pqc</code>, branch <code>master</code>, software v0.1.0-dev</td></tr>
+      <tr><td>Test baselines</td><td>1192 passing on the Windows development machine (current). 649/649 passing on the Pi at the earlier pre-reviewer-evaluation baseline; the 1192 baseline has <b>not</b> yet been pulled and re-verified on the Pi.</td></tr>
+      <tr><td>Primary sources consulted</td><td><code>README.md</code>, <code>docs/SDD.md</code>, <code>docs/DEMO_GUIDE.md</code>, and every listed source module (<code>capture/</code>, <code>enforcement/</code>, <code>config/</code>, <code>ml/</code>, <code>dashboard/</code>, <code>reports/</code>)</td></tr>
+      <tr><td>Key assumption</td><td>No GPIO pins, OLED wiring, LED wiring, systemd unit, or Linux firewall policy is approved anywhere in the repository as of this writing — all are marked PENDING rather than guessed.</td></tr>
+      <tr><td>Fixed constraint carried throughout</td><td>Exactly one external USB Wi-Fi adapter. Built-in Wi-Fi is always the management interface.</td></tr>
+    </table>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 2 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 3 — TABLE OF CONTENTS -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Front Matter</span></div>
+    <div class="ph-title">Table of Contents</div>
+  </div>
+  <div class="page-body">
+    <div class="cols2" style="height:auto; column-gap:10mm;">
+      <div>
+        <div class="toc-section-label">Orientation</div>
+        <ul class="toc-list">
+          <li><span class="tno">04</span><span class="ttitle">Repository Audit Summary</span><span class="tpage">4</span></li>
+          <li><span class="tno">05</span><span class="ttitle">System Overview</span><span class="tpage">5</span></li>
+          <li><span class="tno">06</span><span class="ttitle">Network Architecture</span><span class="tpage">6</span></li>
+          <li><span class="tno">07</span><span class="ttitle">Bill of Materials</span><span class="tpage">7</span></li>
+        </ul>
+        <div class="toc-section-label">Component Identification</div>
+        <ul class="toc-list">
+          <li><span class="tno">08</span><span class="ttitle">Raspberry Pi 4 Board</span><span class="tpage">8</span></li>
+          <li><span class="tno">09</span><span class="ttitle">GPIO Header, Pin 1 &amp; Wi-Fi Roles</span><span class="tpage">9</span></li>
+          <li><span class="tno">10</span><span class="ttitle">OLED, LEDs &amp; Passives</span><span class="tpage">10</span></li>
+        </ul>
+        <div class="toc-section-label">Before You Power On</div>
+        <ul class="toc-list">
+          <li><span class="tno">11</span><span class="ttitle">Safety Before You Begin</span><span class="tpage">11</span></li>
+        </ul>
+        <div class="toc-section-label">Operating System &amp; Network Bring-Up</div>
+        <ul class="toc-list">
+          <li><span class="tno">12</span><span class="ttitle">MicroSD Card &amp; OS Setup (Windows)</span><span class="tpage">12</span></li>
+          <li><span class="tno">13</span><span class="ttitle">First Headless Boot &amp; Verify Management Wi-Fi</span><span class="tpage">13</span></li>
+          <li><span class="tno">14</span><span class="ttitle">Connect the Single USB Wi-Fi Adapter</span><span class="tpage">14</span></li>
+          <li><span class="tno">15</span><span class="ttitle">Check Monitor-Mode Support</span><span class="tpage">15</span></li>
+        </ul>
+      </div>
+      <div>
+        <div class="toc-section-label">Software Bring-Up</div>
+        <ul class="toc-list">
+          <li><span class="tno">16</span><span class="ttitle">Clone CIPHER onto the Pi</span><span class="tpage">16</span></li>
+          <li><span class="tno">17</span><span class="ttitle">Create a New Pi Virtual Environment</span><span class="tpage">17</span></li>
+          <li><span class="tno">18</span><span class="ttitle">Verify ARM64 Software Compatibility</span><span class="tpage">18</span></li>
+          <li><span class="tno">19</span><span class="ttitle">Software Validation Before GPIO</span><span class="tpage">19</span></li>
+          <li><span class="tno">20</span><span class="ttitle">Isolation Forest ML Model on the Pi</span><span class="tpage">20</span></li>
+          <li><span class="tno">21</span><span class="ttitle">Dashboard Access from the Windows Laptop</span><span class="tpage">21</span></li>
+        </ul>
+        <div class="toc-section-label">GPIO, OLED &amp; LEDs (Pending Work)</div>
+        <ul class="toc-list">
+          <li><span class="tno">22</span><span class="ttitle">GPIO Assignment — Pending Final Approval</span><span class="tpage">22</span></li>
+          <li><span class="tno">23</span><span class="ttitle">OLED Hardware — Identification &amp; Pin Map Pending</span><span class="tpage">23</span></li>
+          <li><span class="tno">24</span><span class="ttitle">LED Hardware — Polarity, Resistors &amp; Behaviour</span><span class="tpage">24</span></li>
+          <li><span class="tno">25</span><span class="ttitle">Complete GPIO Assembly — Pending</span><span class="tpage">25</span></li>
+        </ul>
+        <div class="toc-section-label">Software Architecture Reference</div>
+        <ul class="toc-list">
+          <li><span class="tno">26</span><span class="ttitle">Live Multi-Device Capture — Intended Architecture</span><span class="tpage">26</span></li>
+          <li><span class="tno">27</span><span class="ttitle">Reporting, Signing &amp; Enforcement Logic</span><span class="tpage">27</span></li>
+          <li><span class="tno">28</span><span class="ttitle">OLED/LED Software Tests &amp; systemd Boot Concept</span><span class="tpage">28</span></li>
+        </ul>
+        <div class="toc-section-label">Final Assembly &amp; Operation</div>
+        <ul class="toc-list">
+          <li><span class="tno">29</span><span class="ttitle">Final Physical Assembly — Part 1 of 2</span><span class="tpage">29</span></li>
+          <li><span class="tno">30</span><span class="ttitle">Final Physical Assembly — Part 2 of 2</span><span class="tpage">30</span></li>
+          <li><span class="tno">31</span><span class="ttitle">Power-On Checklist</span><span class="tpage">31</span></li>
+          <li><span class="tno">32</span><span class="ttitle">Troubleshooting (I of II)</span><span class="tpage">32</span></li>
+          <li><span class="tno">33</span><span class="ttitle">Troubleshooting (II of II) &amp; Presentation Mode</span><span class="tpage">33</span></li>
+          <li><span class="tno">34</span><span class="ttitle">Hardware &amp; Software Status Table</span><span class="tpage">34</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 3 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 4 — REPOSITORY AUDIT SUMMARY -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Orientation</span></div>
+    <div class="ph-title">Repository Audit Summary</div>
+  </div>
+  <div class="page-body">
+    <p class="lead">Performed directly against the repository before any manual content was written. This table is the
+    factual basis for every status pill used later in this document — nothing below is inferred or assumed.</p>
+    <table class="tbl compact">
+      <tr><th style="width:22%;">Item</th><th style="width:10%;">Implemented?</th><th style="width:38%;">Exact source</th><th>Safe to document as final?</th></tr>
+      <tr><td>Raspberry Pi OS-level bring-up</td><td>Yes (completed)</td><td>ARM64 Debian 13 on Pi 4 Model B 4GB; repository cloned, <code>.venv</code> built, pinned dependencies installed, imports succeeded, <code>preflight.py</code> passed, 649/649 tests passed at the then-current baseline</td><td>Yes — as bring-up only</td></tr>
+      <tr><td>OLED driver code</td><td>No</td><td>Not found anywhere (<code>grep -r ssd1306/oled</code> — zero matches)</td><td>No</td></tr>
+      <tr><td>GPIO LED driver code</td><td>No</td><td>Not found anywhere; no <code>hardware/</code> package exists</td><td>No</td></tr>
+      <tr><td>GPIO pin assignments</td><td>No</td><td>No constant, config, or doc defines a pin number for any peripheral</td><td>No — marked PENDING</td></tr>
+      <tr><td>Windows host-level live capture</td><td>Yes (tested, Windows-only)</td><td><code>capture/host_live_source.py</code> — a separate, temporary <code>run_live_demo.py</code> path; normalizes traffic around the local host; covered by <code>tests/capture/test_host_live_source.py</code></td><td>Yes — document as its own, distinct capability</td></tr>
+      <tr><td>Raspberry Pi / multi-device live capture</td><td>No (scaffold only)</td><td><code>capture/live_source.py</code> — raises <code>LiveCaptureNotImplementedError</code> immediately; this is the general, Pi-oriented scaffold, unaffected by the Windows path above</td><td>No</td></tr>
+      <tr><td>Monitor-mode <b>hardware</b> capability</td><td>Yes (verified outside CIPHER)</td><td>AR9271 on <code>ath9k_htc</code> (firmware 1.3) switched to monitor mode; 802.11 + Radiotap frames captured with <code>tcpdump</code>; 100-packet PCAP written</td><td>Yes — as a hardware capability only</td></tr>
+      <tr><td>Monitor-mode <b>handling inside CIPHER</b></td><td>No</td><td>Not referenced anywhere in <code>capture/</code>; no Radiotap/802.11 parsing exists</td><td>No — ingestion not validated</td></tr>
+      <tr><td>Linux enforcement backend</td><td>No</td><td><code>enforcement/backends.py</code> — only <code>NoOpIsolationBackend</code> exists; module docstring explicitly defers iptables</td><td>No — do not apply firewall rules</td></tr>
+      <tr><td>systemd service unit</td><td>No</td><td>No <code>.service</code> file anywhere in the repository</td><td>No</td></tr>
+      <tr><td>Dashboard network binding</td><td>Configurable, defaults to localhost</td><td><code>config/constants.py</code> — <code>DEFAULT_FLASK_HOST = "127.0.0.1"</code>, overridable via <code>FLASK_HOST</code> env var</td><td>Yes — document the existing override</td></tr>
+      <tr><td>ML model loading</td><td>Yes</td><td><code>ml/loading.py</code>, <code>ml/train.py</code> — optional, QRS-only mode if absent</td><td>Yes</td></tr>
+      <tr><td>Report generation</td><td>Yes</td><td><code>reports/pdf_generator.py</code> — ML-DSA-44 signed, 3-page PDF</td><td>Yes</td></tr>
+      <tr><td>Core risk pipeline (QRS + fusion + enforcement decision)</td><td>Yes</td><td><code>risk/</code>, <code>fusion/</code>, <code>enforcement/decision.py</code> — 1192 tests passing on Windows</td><td>Yes</td></tr>
+    </table>
+    <div class="panel panel-info" style="margin-top:4mm;">
+      <div class="ptitle">What this means for this manual</div>
+      Pages describing the existing pipeline, reports, dashboard, and enforcement <i>decision logic</i> are written as
+      <b>CURRENTLY IMPLEMENTED</b>. Every page touching physical Pi hardware (OLED, LEDs, GPIO, monitor-mode capture,
+      Linux firewall rules, systemd) is written as <b>PENDING</b> and describes the intended architecture only —
+      never invented specifics.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 4 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 5 — SYSTEM OVERVIEW -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Orientation</span></div>
+    <div class="ph-title">System Overview</div>
+  </div>
+  <div class="page-body" style="display:flex; flex-direction:column;">
+    <div class="diagram-frame grow" style="padding:2mm;">
+      <img src="diagrams/system-overview.svg" style="object-fit:contain;">
+    </div>
+    <div class="diagram-caption">End-to-end view: management path (top), the existing CIPHER software core (middle), and the pending monitoring path (bottom). See the Legend page for what each status pill means.</div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 5 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 6 — NETWORK ARCHITECTURE -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Orientation</span></div>
+    <div class="ph-title">Network Architecture</div>
+  </div>
+  <div class="page-body" style="display:flex; flex-direction:column;">
+    <div class="diagram-frame grow" style="padding:2mm;">
+      <img src="diagrams/network-architecture.svg" style="object-fit:contain;">
+    </div>
+    <div class="diagram-caption">One trusted network. Built-in Wi-Fi carries management traffic; the single external USB adapter carries monitoring traffic. CIPHER never bridges, routes, or creates a second wireless network.</div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 6 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 7 — BILL OF MATERIALS -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Orientation</span></div>
+    <div class="ph-title">Bill of Materials</div>
+  </div>
+  <div class="page-body">
+    <div class="bom-grid">
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-pi.svg"><div class="name">Raspberry Pi 4 Model B</div><div class="role">4GB RAM</div></div>
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-sdcard.svg"><div class="name">microSD card</div><div class="role">Raspberry Pi OS 64-bit</div></div>
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-power.svg"><div class="name">Pi 4 USB-C power supply</div><div class="role">official / adequately rated</div></div>
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-usbwifi.svg"><div class="name">External USB Wi-Fi adapter — Atheros AR9271</div><div class="role"><code>ath9k_htc</code> fw 1.3; monitor mode verified — <b>exactly one</b></div></div>
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-oled.svg"><div class="name">SSD1306 I²C OLED</div><div class="role">status display (pending)</div></div>
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-led_g.svg"><div class="name">Green LED</div><div class="role">LOW risk indicator (pending)</div></div>
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-led_a.svg"><div class="name">Amber/Yellow LED</div><div class="role">MEDIUM risk indicator (pending)</div></div>
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-led_r.svg"><div class="name">Red LED</div><div class="role">HIGH risk indicator (pending)</div></div>
+      <div class="bom-card"><span class="qty">×3+</span><img class="icon" src="diagrams/icon-resistor.svg"><div class="name">Current-limiting resistors</div><div class="role">one per LED, value per datasheet</div></div>
+      <div class="bom-card"><span class="qty">as needed</span><img class="icon" src="diagrams/icon-jumper.svg"><div class="name">Male-to-female jumper wires</div><div class="role">breadboard ↔ GPIO header</div></div>
+      <div class="bom-card"><span class="qty">×1 (if needed)</span><img class="icon" src="diagrams/icon-breadboard.svg"><div class="name">Breadboard</div><div class="role">only if it eases safe assembly</div></div>
+      <div class="bom-card"><span class="qty">×1</span><img class="icon" src="diagrams/icon-laptop.svg"><div class="name">Windows laptop</div><div class="role">SSH, dashboard, flashing microSD</div></div>
+    </div>
+    <div class="panel panel-danger" style="margin-top:4mm;">
+      <div class="ptitle">Fixed hardware constraint</div>
+      This project can afford <b>exactly one</b> external USB Wi-Fi adapter. The Pi's <b>built-in Wi-Fi always handles
+      management</b> (SSH, dashboard, package access) and is never repurposed for capture. Do not add, list, or budget for
+      a second external adapter under any circumstance.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 7 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 8 — COMPONENT ID: PI BOARD -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Component Identification</span></div>
+    <div class="ph-title">Raspberry Pi 4 Board</div>
+  </div>
+  <div class="page-body" style="display:flex; flex-direction:column; justify-content:center;">
+    <div class="diagram-frame natural" style="padding:6mm; border:none;">
+      <img src="diagrams/pi-board-top.svg">
+    </div>
+    <div class="diagram-caption">Port and connector locations are factual Raspberry Pi 4 Model B specifications, shown for identification only.</div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 8 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 9 — GPIO HEADER, PIN1 & WIFI ROLES -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Component Identification</span></div>
+    <div class="ph-title">GPIO Header, Pin 1 &amp; Wi-Fi Roles</div>
+  </div>
+  <div class="page-body stack">
+    <div class="diagram-frame" style="height:58%; padding:2mm;">
+      <img src="diagrams/gpio-header-pin1.svg" style="object-fit:contain;">
+    </div>
+    <div class="diagram-frame" style="height:38%; padding:2mm;">
+      <img src="diagrams/wifi-roles.svg" style="object-fit:contain;">
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 9 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 10 — OLED/LED/PASSIVES -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Component Identification</span></div>
+    <div class="ph-title">OLED, LEDs, Resistors &amp; Wires</div>
+  </div>
+  <div class="page-body" style="display:flex; flex-direction:column; justify-content:center;">
+    <div class="diagram-frame natural" style="padding:6mm; border:none;">
+      <img src="diagrams/oled-led-components.svg">
+    </div>
+    <div class="diagram-caption">Identification only. None of these are wired yet — see "GPIO Assignment — Pending Final Approval."</div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 10 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 11 — SAFETY -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Before You Power On</span></div>
+    <div class="ph-title">Safety Before You Begin</div>
+  </div>
+  <div class="page-body">
+    <div class="cols2" style="height:auto; column-gap:8mm;">
+      <div>
+        <h3 class="sub">General handling</h3>
+        <ul class="checklist">
+          <li><b>Power the Pi off</b> (unplug the USB-C supply) before connecting or disconnecting any GPIO wiring.</li>
+          <li>Use a suitable, adequately-rated official Raspberry Pi 4 USB-C power supply.</li>
+          <li>Take basic static-discharge precautions — touch a grounded metal surface before handling the board.</li>
+          <li>Do not experimentally move wires "to see what happens" while uncertain — stop and re-check the diagram instead.</li>
+          <li>Double-check every connection against its labelled diagram before applying power.</li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="sub">Electrical specifics</h3>
+        <ul class="checklist">
+          <li>Raspberry Pi GPIO logic is <b>3.3&nbsp;V</b> — never apply 5V logic directly to a GPIO pin.</li>
+          <li>Avoid shorts between adjacent header pins, especially power and GND.</li>
+          <li>Never connect an LED directly to a GPIO pin without a current-limiting resistor.</li>
+          <li>LED polarity matters — the long leg (anode, +) and the flat-sided leg (cathode, −) are not interchangeable.</li>
+          <li>Confirm you are using a GPIO pin, not a power pin (3V3/5V), before connecting a signal wire.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="panel panel-danger" style="margin-top:5mm;">
+      <div class="ptitle">Stop if unsure</div>
+      If a connection does not clearly match a labelled diagram in this manual, stop and re-check before applying power.
+      GPIO wiring for the OLED and LEDs is currently <b>pending final approval</b> (see page 22) — do not improvise pin
+      choices to "get it working" ahead of that approval.
+    </div>
+    <div class="panel panel-info" style="margin-top:4mm;">
+      <div class="ptitle">Why this matters here specifically</div>
+      This project has no committed GPIO wiring map yet. Every wiring mistake made while guessing pin numbers is a mistake
+      this manual is specifically designed to prevent — follow the PENDING markers rather than working around them.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 11 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 12 — MICROSD / OS SETUP -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">OS &amp; Network Bring-Up</span></div>
+    <div class="ph-title">MicroSD Card &amp; OS Setup (Windows)</div>
+  </div>
+  <div class="page-body" style="display:flex; flex-direction:column;">
+    <div class="diagram-frame grow" style="padding:2mm;">
+      <img src="diagrams/imager-flow.svg" style="object-fit:contain;">
+    </div>
+    <div class="panel panel-warning" style="margin-top:2mm;">
+      <div class="ptitle">No hardcoded credentials</div>
+      Set your own hostname, username, and password in Raspberry Pi Imager's advanced options. This manual never supplies
+      a default username/password — CIPHER's repository does not define one, and none should be invented here.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 12 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 13 — FIRST HEADLESS BOOT + VERIFY MGMT WIFI -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">OS &amp; Network Bring-Up</span></div>
+    <div class="ph-title">First Headless Boot &amp; Verify Management Wi-Fi</div>
+  </div>
+  <div class="page-body">
+    <div class="cols-2-1" style="height:auto;">
+      <div class="diagram-frame" style="height:56mm; padding:2mm;">
+        <img src="diagrams/ssh-boot-flow.svg" style="object-fit:contain;">
+      </div>
+      <div>
+        <h3 class="sub">Find &amp; connect</h3>
+        <p class="lead" style="font-size:10.3px;">No monitor or keyboard is required. Find the Pi's address from your
+        router's client list, or by its configured hostname, then connect from the Windows laptop:</p>
+        <div class="cmd">ssh &lt;your-username&gt;@&lt;hostname-or-ip&gt;.local</div>
+      </div>
+    </div>
+
+    <h3 class="sub" style="margin-top:5mm;">Verify the built-in Wi-Fi is the management link</h3>
+    <p class="lead">Before connecting the monitoring adapter, confirm the built-in Wi-Fi is up and identify its actual
+    interface name — do not assume it will be <code>wlan0</code>.</p>
+    <div class="cmd">ip addr<span class="c">   # confirm an IPv4 address on the built-in Wi-Fi interface</span>
+ip link<span class="c">   # confirm the interface is UP</span>
+iw dev<span class="c">    # confirm the interface is operating in managed mode</span></div>
+    <ul class="checklist">
+      <li>Record the actual interface name shown (e.g. it may not be <code>wlan0</code> on every board/OS image).</li>
+      <li>Confirm it has a real IPv4 address on your trusted network.</li>
+      <li>Confirm SSH from the Windows laptop still works over this same link.</li>
+    </ul>
+    <div class="panel panel-success">
+      <div class="ptitle">Expected result</div>
+      A working SSH session, a built-in Wi-Fi interface with an IP address on your trusted network, and a noted interface
+      name you can refer back to later.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 13 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 14 — CONNECT USB WIFI ADAPTER -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">OS &amp; Network Bring-Up</span></div>
+    <div class="ph-title">Connect the Single USB Wi-Fi Adapter</div>
+  </div>
+  <div class="page-body">
+    <div class="diagram-frame natural" style="padding:4mm; border:none;">
+      <img src="diagrams/usb-adapter-connect.svg">
+    </div>
+    <ul class="checklist" style="margin-top:6mm;">
+      <li>Connect only the single approved external USB Wi-Fi adapter — never a second one.</li>
+      <li>Identify it with <code>lsusb</code>, <code>ip link</code>, and <code>iw dev</code>; record its actual interface name.</li>
+      <li>Confirm the built-in Wi-Fi management link is still connected and unaffected.</li>
+      <li>Consider physically labelling the adapter (e.g. a small sticker) to avoid confusing it with the built-in interface later.</li>
+    </ul>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 14 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 15 — CHECK MONITOR-MODE SUPPORT -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">OS &amp; Network Bring-Up</span></div>
+    <div class="ph-title">Check Monitor-Mode Support</div>
+  </div>
+  <div class="page-body">
+    <p class="lead">Before CIPHER uses the adapter, confirm the adapter, its driver, and monitor mode itself are all
+    actually present — do not assume support for an unverified chipset.</p>
+    <div class="cmd">iw list<span class="c">    # look for "monitor" under Supported interface modes</span>
+iw dev<span class="c">     # confirm the adapter's interface is listed</span></div>
+    <h3 class="sub" style="margin-top:4mm;">Checklist — completed on this deployment</h3>
+    <ul class="checklist">
+      <li>[x] USB adapter detected (appears in <code>lsusb</code>) — Qualcomm Atheros AR9271</li>
+      <li>[x] Chipset identified — AR9271</li>
+      <li>[x] Linux driver loaded and working — <code>ath9k_htc</code>, firmware 1.3</li>
+      <li>[x] "monitor" mode listed as a supported interface type in <code>iw list</code></li>
+      <li>[x] Management Wi-Fi (built-in interface) still connected throughout this check</li>
+    </ul>
+    <div class="panel panel-success">
+      <div class="ptitle">Hardware capability verified</div>
+      Monitor mode was enabled on the external adapter, and <code>tcpdump</code> captured IEEE 802.11 + Radiotap frames,
+      writing a 100-packet PCAP file. This establishes that this adapter and driver can produce a valid monitor-mode
+      capture on this Pi. It does <b>not</b> establish that CIPHER ingests such a capture — monitor-mode handling inside
+      CIPHER remains <b>SOFTWARE IMPLEMENTATION PENDING</b>.
+    </div>
+    <div class="panel panel-warning">
+      <div class="ptitle">Monitor mode is passive reception only</div>
+      Being in monitor mode does not mean the Pi automatically sees every device's usable traffic on an arbitrary Wi-Fi
+      network: it receives frames on the channel it is tuned to, within radio range, and frames belonging to a protected
+      network remain encrypted. CIPHER performs no packet injection, no deauthentication, and no credential capture.
+      If you repeat this on different hardware and monitor mode is not listed, do not invent chipset-specific
+      configuration — record the exact chipset and driver and treat monitor-mode capture as pending.
+    </div>
+    <div class="panel panel-info">
+      <div class="ptitle">Status — two different milestones, only the first is done</div>
+      CIPHER's own capture pipeline does not yet consume a monitor-mode interface — <code>capture/live_source.py</code> is
+      a documented scaffold that raises immediately, and no Radiotap/802.11 parsing exists anywhere in
+      <code>capture/</code>. This page verifies the <i>adapter</i> is ready; wiring it into CIPHER's pipeline is separate,
+      future work (see page 26).
+      <br><br>
+      <b>Why a successful <code>tcpdump</code> capture is not CIPHER validation.</b>
+      <code>capture/offline_source.py</code> yields a packet only when it has an IP layer, a TCP or UDP layer, <b>and</b> a
+      non-empty transport payload; anything else is silently skipped. Measured against the real, unmodified reader: a PCAP
+      of encrypted (CCMP) 802.11 data frames yielded <b>0 of 5</b> packets, 802.11 beacons <b>0 of 5</b>, a mixed capture
+      <b>0 of 4</b>, while <i>unencrypted</i> 802.11 data frames carrying IP/TCP via LLC/SNAP yielded <b>3 of 3</b>. So a
+      monitor-mode PCAP is processable today only for its unencrypted-IP subset; a capture from a normal protected Wi-Fi
+      network yields nothing, with no error.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 15 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 16 — CLONE REPO -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Bring-Up</span></div>
+    <div class="ph-title">Clone CIPHER onto the Pi</div>
+  </div>
+  <div class="page-body">
+    <div class="step"><div class="step-num">1</div><div class="step-body">
+      <div class="st">Open an SSH session to the Pi</div>
+      <div class="sd">Using the management link confirmed on page 13.</div></div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body">
+      <div class="st">Clone the repository</div>
+      <div class="sd">Use the project's actual repository URL:</div>
+      <div class="cmd">git clone https://github.com/chandini-narayana/cipher-pqc.git
+cd cipher-pqc</div></div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-body">
+      <div class="st">Authenticate securely if the repository requires it</div>
+      <div class="sd">Use an SSH key or a credential manager/personal access token entered interactively. Never paste a
+      token, password, or private key into a script, commit, or this manual.</div></div></div>
+    <div class="panel panel-danger">
+      <div class="ptitle">Never expose secrets</div>
+      Do not embed tokens, passwords, or private keys in shell history, files committed to the repository, or screenshots.
+      If a token is pasted into a terminal, clear scrollback/history afterwards.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 16 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 17 — CREATE PI VENV -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Bring-Up</span></div>
+    <div class="ph-title">Create a New Pi Virtual Environment</div>
+  </div>
+  <div class="page-body">
+    <div class="panel panel-danger">
+      <div class="ptitle">Do not copy an existing environment</div>
+      Do <b>not</b> copy <code>venv/</code> or <code>.venv-pi-validation/</code> from the Windows development machine.
+      Both are Windows/x86-specific and gitignored — they will not work on ARM64 Linux.
+    </div>
+    <div class="step"><div class="step-num">1</div><div class="step-body">
+      <div class="st">Create a fresh environment from <code>requirements.txt</code></div>
+      <div class="cmd">python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt</div></div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body">
+      <div class="st">Confirm the environment is the one CIPHER will use</div>
+      <div class="sd">Every subsequent command in this manual assumes this <code>.venv</code> is activated in the current shell.</div></div></div>
+    <div class="panel panel-info">
+      <div class="ptitle">Why this matters</div>
+      <code>requirements.txt</code> is CIPHER's canonical, independently re-validated dependency baseline — but it was
+      validated on Windows/x86 only. Raspberry Pi bring-up must build its own fresh environment from this same file, not
+      by assuming Windows results transfer.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 17 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 18 — VERIFY ARM64 COMPATIBILITY -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Bring-Up</span></div>
+    <div class="ph-title">Verify ARM64 Software Compatibility</div>
+  </div>
+  <div class="page-body">
+    <p class="lead">Windows validation does not prove Raspberry Pi compatibility. The pinned dependencies below must be
+    verified installing cleanly on the actual Pi, from <code>requirements.txt</code> exactly as committed.</p>
+    <table class="tbl compact">
+      <tr><th>Package</th><th>Pinned version</th><th>ARM64 install result</th></tr>
+      <tr><td>flask</td><td>3.1.3</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>scapy</td><td>2.7.0</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>scikit-learn</td><td>1.8.0</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>joblib</td><td>1.5.3</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>dilithium-py</td><td>1.4.0</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>cryptography</td><td>50.0.0</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>reportlab</td><td>5.0.0</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>python-dotenv</td><td>1.2.2</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>pytest</td><td>9.1.1</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>numpy</td><td>2.4.6</td><td class="resultbox" style="border:none; padding:0;"><span class="rline"></span></td></tr>
+    </table>
+    <div class="panel panel-warning" style="margin-top:3mm;">
+      <div class="ptitle">If a package fails to install</div>
+      Record the actual failure (wheel unavailable, build-from-source error, etc.) before proposing any version change.
+      Do not change a pinned version simply because installation is inconvenient — <code>requirements.txt</code> is
+      CIPHER's canonical baseline for a reason (see <code>docs/SDD.md</code>'s Pre-Pi hardening addendum).
+    </div>
+    <div class="resultbox"><span class="rlabel">Failure notes (if any):</span><span class="rline"></span></div>
+    <div class="resultbox"><span class="rlabel">&nbsp;</span><span class="rline"></span></div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 18 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 19 — SOFTWARE VALIDATION BEFORE GPIO -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Bring-Up</span></div>
+    <div class="ph-title">Software Validation Before GPIO</div>
+  </div>
+  <div class="page-body">
+    <p class="lead">Run the existing, unmodified software baseline on the Pi before connecting or implementing any
+    hardware-specific behaviour. Do not copy Windows performance numbers and relabel them as Pi results.</p>
+    <div class="cmd">pytest -q<span class="c">              # full test suite</span>
+python preflight.py<span class="c">     # environment/asset readiness check</span>
+python evaluate_demo.py<span class="c"> # controlled 5-scenario evaluation harness</span></div>
+    <h3 class="sub" style="margin-top:4mm;">Results recorded on the Pi so far</h3>
+    <div class="resultbox"><span class="rlabel">Pi full test result:</span><span class="rline"><b>649/649 passing</b> — at the pre-reviewer-evaluation baseline</span></div>
+    <div class="resultbox"><span class="rlabel">Pi preflight:</span><span class="rline"><b>passed</b>, after training the Isolation Forest locally</span></div>
+    <div class="resultbox"><span class="rlabel">Pi required imports:</span><span class="rline"><b>succeeded</b></span></div>
+    <h3 class="sub" style="margin-top:4mm;">Still outstanding on the Pi</h3>
+    <div class="resultbox"><span class="rlabel">Current 1192-test baseline:</span><span class="rline">not yet pulled or re-verified on the Pi</span></div>
+    <div class="resultbox"><span class="rlabel">Pi core scenarios (5/5):</span><span class="rline"></span></div>
+    <div class="resultbox"><span class="rlabel">Pi startup time:</span><span class="rline"></span></div>
+    <div class="resultbox"><span class="rlabel">Pi CPU utilisation:</span><span class="rline"></span></div>
+    <div class="resultbox"><span class="rlabel">Pi memory usage:</span><span class="rline"></span></div>
+    <div class="resultbox"><span class="rlabel">Pi temperature:</span><span class="rline"></span></div>
+    <div class="panel panel-danger" style="margin-top:3mm;">
+      <div class="ptitle">Do not reuse Windows figures</div>
+      The repository's measured performance figures are <b>Windows-only</b> measurements. Measure the Pi equivalents with
+      the same harness (<code>python evaluate_performance.py</code>, and
+      <code>--stability-iterations</code> for a sustained-run drift check), which runs unchanged on ARM64 and records
+      platform metadata so the two stay distinguishable. <b>No Pi performance numbers have been collected yet</b> — do
+      not quote any.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 19 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 20 — ML MODEL -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Bring-Up</span></div>
+    <div class="ph-title">Isolation Forest ML Model on the Pi</div>
+  </div>
+  <div class="page-body">
+    <p class="lead">Isolation Forest anomaly detection is optional and secondary to QRS. If no trained model is present at
+    <code>ml/artifacts/anomaly_detector.joblib</code>, CIPHER runs correctly in <b>QRS-only mode</b> — this is not an error.</p>
+    <h3 class="sub">If a trained model artifact is needed on the Pi</h3>
+    <div class="cmd">python -m ml.train<span class="c">   # regenerates ml/artifacts/anomaly_detector.joblib</span></div>
+    <ul class="checklist">
+      <li>This uses the existing, repository-approved synthetic training process (<code>ml/dataset.py</code>) — do not
+      substitute a different data source.</li>
+      <li>Do not silently substitute <code>data/datasets/CIPHER_Raw_Dataset_InputOnly_5000.xlsx</code> (the synthetic
+      medical IoT workbook) as training data — the project's training process does not currently use it, and this
+      manual does not change that decision.</li>
+      <li>Prefer regenerating the deterministic model on the Pi using <code>python -m ml.train</code> so it is created
+      under the Pi's installed Python/scikit-learn environment. If an existing artifact is reused instead, its
+      compatibility must be explicitly verified.</li>
+    </ul>
+    <div class="panel panel-info">
+      <div class="ptitle">Do not redesign the model</div>
+      This manual does not retrain, re-tune, or replace the existing Isolation Forest approach simply because the
+      platform changed. If no model is present, CIPHER's QRS scoring is entirely unaffected — see page 27 for the fusion rule.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 20 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 21 — DASHBOARD ACCESS -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Bring-Up</span></div>
+    <div class="ph-title">Dashboard Access from the Windows Laptop</div>
+  </div>
+  <div class="page-body">
+    <p class="lead">CIPHER serves its React dashboard and REST API from a single Flask process
+    (<code>run_demo.py</code>). By default it binds to <code>127.0.0.1</code> — reachable only from the Pi itself.</p>
+    <div class="step"><div class="step-num">1</div><div class="step-body">
+      <div class="st">Bind to the LAN, using the existing configuration surface</div>
+      <div class="sd">This uses CIPHER's own settings mechanism (<code>config/settings.py</code>) — no code change.</div>
+      <div class="cmd">export FLASK_HOST=0.0.0.0
+python run_demo.py</div></div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body">
+      <div class="st">Open the dashboard from the Windows laptop's browser</div>
+      <div class="cmd">http://&lt;PI-IP&gt;:5000</div>
+      <div class="sd">Using the Pi's built-in Wi-Fi management-link address recorded on page 13.</div></div></div>
+    <div class="panel panel-warning">
+      <div class="ptitle">Only bind as widely as needed</div>
+      <code>FLASK_HOST=0.0.0.0</code> exposes the dashboard to the whole trusted LAN, not just your laptop. Do not expose
+      it more broadly (e.g. port-forwarded to the public internet) — that is outside this project's scope.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 21 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 22 — GPIO ASSIGNMENT PENDING -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">GPIO, OLED &amp; LEDs</span></div>
+    <div class="ph-title">GPIO Assignment — Pending Final Approval</div>
+  </div>
+  <div class="page-body" style="display:flex; flex-direction:column;">
+    <div class="panel panel-pending">
+      <div class="ptitle">No GPIO pin is approved yet</div>
+      Nothing in the CIPHER repository assigns a physical or BCM pin number to the OLED (VCC/GND/SDA/SCL) or to any LED.
+      This page intentionally does not present a wiring map as final.
+    </div>
+    <div class="diagram-frame grow" style="padding:2mm; margin-top:2mm;">
+      <img src="diagrams/pi-header-reference.svg" style="object-fit:contain;">
+    </div>
+    <ul class="checklist" style="margin-top:2mm;">
+      <li>CIPHER should use the Raspberry Pi's standard I²C1 interface. Its default SDA/SCL connections are BCM GPIO2 /
+      physical pin 3 and BCM GPIO3 / physical pin 5.</li>
+      <li>Which GND and 3V3/5V pins power the OLED, and which GPIO pins drive the three LEDs, remain open decisions.</li>
+      <li>Do not wire the OLED or LEDs until a future manual revision freezes these choices.</li>
+    </ul>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 22 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 23 — OLED HARDWARE PENDING -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">GPIO, OLED &amp; LEDs</span></div>
+    <div class="ph-title">OLED Hardware — Identification &amp; Pin Map Pending</div>
+  </div>
+  <div class="page-body">
+    <p class="lead">The approved bill of materials specifies an <b>SSD1306 I²C OLED</b>. Its four connections are
+    typically labelled <code>VCC</code>, <code>GND</code>, <code>SDA</code>, <code>SCL</code> — but always verify the
+    exact markings printed on your specific module before assuming label order.</p>
+    <div class="panel panel-warning">
+      <div class="ptitle">Check the module itself</div>
+      Label order and silkscreen wording vary between SSD1306 breakout boards. Read your physical module before wiring
+      anything, and never assume undocumented voltage tolerance — confirm the module is 3.3V-safe (most are, but verify).
+    </div>
+    <div class="panel panel-gpio">
+      <div class="ptitle">CIPHER OLED wiring: PIN MAP PENDING</div>
+      No final GND/power/SDA/SCL pin choice is approved in the repository yet. Do not invent final connections —
+      wait for the GPIO Assignment page (22) to be updated in a future revision.
+    </div>
+    <h3 class="sub" style="margin-top:4mm;">What the eventual wiring will require</h3>
+    <ul class="checklist">
+      <li>A ground connection (any Pi GND pin).</li>
+      <li>A power connection matching the module's rated voltage (commonly 3.3V on the Pi header).</li>
+      <li>CIPHER should use the Raspberry Pi's standard I²C1 interface. Its default SDA/SCL connections are BCM GPIO2 /
+      physical pin 3 and BCM GPIO3 / physical pin 5.</li>
+    </ul>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 23 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 24 — LED HARDWARE -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">GPIO, OLED &amp; LEDs</span></div>
+    <div class="ph-title">LED Hardware — Polarity, Resistors &amp; Intended Behaviour</div>
+  </div>
+  <div class="page-body" style="display:flex; flex-direction:column;">
+    <div class="diagram-frame" style="height:44%; padding:2mm;">
+      <img src="diagrams/led-wiring-concept.svg" style="object-fit:contain;">
+    </div>
+    <h3 class="sub" style="margin-top:3mm;">Desired hardware behaviour (software not yet implemented)</h3>
+    <table class="tbl compact">
+      <tr><th>CIPHER risk category</th><th>Desired LED colour</th><th>Status</th></tr>
+      <tr><td>LOW</td><td>Green</td><td><span class="pill pill-sw">Software Pending</span></td></tr>
+      <tr><td>MEDIUM</td><td>Amber</td><td><span class="pill pill-sw">Software Pending</span></td></tr>
+      <tr><td>HIGH</td><td>Red</td><td><span class="pill pill-sw">Software Pending</span></td></tr>
+    </table>
+    <div class="panel panel-pending" style="margin-top:2mm;">
+      <div class="ptitle">Desired behaviour, not current behaviour</div>
+      No GPIO control code exists yet anywhere in the repository. LEDs do not currently respond to any assessment.
+      This table records the intended mapping for a future software phase — it is not a claim about today's software.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 24 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 25 — COMPLETE GPIO ASSEMBLY PENDING -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">GPIO, OLED &amp; LEDs</span></div>
+    <div class="ph-title">Complete GPIO Assembly — Pending</div>
+  </div>
+  <div class="page-body">
+    <div class="panel panel-gpio">
+      <div class="ptitle">This page is intentionally incomplete</div>
+      A single, final illustration showing the Pi, OLED, all three LEDs, resistors, and jumper wires together — with a
+      complete wiring table (Component / Signal / BCM / Physical pin / Destination) — can only be produced once the GPIO
+      assignment on page 22 is genuinely frozen and approved.
+    </div>
+    <h3 class="sub" style="margin-top:4mm;">What will appear here once GPIO pins are approved</h3>
+    <table class="tbl compact">
+      <tr><th>Component</th><th>Signal</th><th>BCM</th><th>Physical pin</th><th>Destination</th></tr>
+      <tr><td>SSD1306 OLED</td><td>SDA</td><td>GPIO2</td><td>3</td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>SSD1306 OLED</td><td>SCL</td><td>GPIO3</td><td>5</td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>SSD1306 OLED</td><td>VCC</td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>SSD1306 OLED</td><td>GND</td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>Green LED (LOW)</td><td>anode via resistor</td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>Amber LED (MEDIUM)</td><td>anode via resistor</td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td></tr>
+      <tr><td>Red LED (HIGH)</td><td>anode via resistor</td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"></span></td></tr>
+    </table>
+    <div class="panel panel-danger" style="margin-top:3mm;">
+      <div class="ptitle">Never leave an ambiguous connection</div>
+      Every blank cell above must be filled from an actually-approved decision before any wire is connected — never from
+      a guess made to finish this table.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 25 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 26 — LIVE CAPTURE ARCHITECTURE -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Architecture Reference</span></div>
+    <div class="ph-title">Live Multi-Device Capture — Intended Architecture</div>
+  </div>
+  <div class="page-body">
+    <div class="diagram-frame natural" style="padding:6mm; border:none;">
+      <img src="diagrams/capture-architecture.svg">
+    </div>
+    <div class="panel panel-warning" style="margin-top:8mm;">
+      <div class="ptitle">Do not reuse the Windows host-live approach</div>
+      The temporary Windows live-capture mode (<code>capture/host_live_source.py</code>) treats the laptop itself as the
+      one monitored device and normalizes every packet around its own IP. That behaviour is specific to host-level
+      capture and must <b>not</b> be copied into the Pi's multi-device monitoring architecture, which must preserve each
+      observed device's real identity by source IP.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 26 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 27 — REPORTING + ENFORCEMENT -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Architecture Reference</span></div>
+    <div class="ph-title">Reporting, Signing &amp; Enforcement Logic</div>
+  </div>
+  <div class="page-body" style="display:flex; flex-direction:column;">
+    <div class="diagram-frame grow" style="padding:2mm;">
+      <img src="diagrams/reporting-enforcement-flow.svg" style="object-fit:contain;">
+    </div>
+    <table class="tbl compact" style="margin-top:2mm;">
+      <tr><th>QRS score</th><th>Category</th><th>Isolation eligible?</th></tr>
+      <tr><td>0–2</td><td>LOW</td><td>No</td></tr>
+      <tr><td>3–6</td><td>MEDIUM</td><td>No</td></tr>
+      <tr><td>7–10</td><td>HIGH</td><td>Yes (raw QRS ≥ 7)</td></tr>
+    </table>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 27 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 28 — OLED/LED TESTS + SYSTEMD -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Software Architecture Reference</span></div>
+    <div class="ph-title">OLED/LED Software Tests &amp; systemd Boot Concept</div>
+  </div>
+  <div class="page-body">
+    <h3 class="sub">OLED / LED software tests — IMPLEMENTATION PENDING</h3>
+    <p class="lead">No OLED or LED driver code exists yet, so no repository-supported test command exists either.
+    The checklist below records what will need verifying once that code exists — it does not name any command that
+    exists today.</p>
+    <ul class="checklist">
+      <li>[ ] OLED initializes and displays expected content over I²C — <span class="pill pill-sw">Pending</span></li>
+      <li>[ ] Green LED lights for a LOW-category assessment — <span class="pill pill-sw">Pending</span></li>
+      <li>[ ] Amber LED lights for a MEDIUM-category assessment — <span class="pill pill-sw">Pending</span></li>
+      <li>[ ] Red LED lights for a HIGH-category assessment — <span class="pill pill-sw">Pending</span></li>
+    </ul>
+
+    <h3 class="sub" style="margin-top:5mm;">systemd boot concept — IMPLEMENTATION PENDING</h3>
+    <p class="lead">No <code>.service</code> unit file exists in the repository. The intended boot concept, at a
+    conceptual level only:</p>
+    <div class="step"><div class="step-num">1</div><div class="step-body"><div class="st">Pi boots</div></div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body"><div class="st">Network becomes ready</div></div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-body"><div class="st">CIPHER starts</div></div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-body"><div class="st">Health check passes</div></div></div>
+    <div class="step"><div class="step-num">5</div><div class="step-body"><div class="st">Dashboard becomes available</div></div></div>
+    <div class="panel panel-pending">
+      <div class="ptitle">No final service file yet</div>
+      This manual does not invent unit file contents, restart policies, or dependency ordering directives. Those are
+      systemd implementation decisions that have not been made in the repository yet.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 28 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 29 — FINAL ASSEMBLY PART 1 -->
+<!-- ============================================================ -->
+<div class="page no-pad">
+  <img src="diagrams/final-assembly-1.svg" style="width:100%; height:100%; object-fit:contain;">
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 30 — FINAL ASSEMBLY PART 2 -->
+<!-- ============================================================ -->
+<div class="page no-pad">
+  <img src="diagrams/final-assembly-2.svg" style="width:100%; height:100%; object-fit:contain;">
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 31 — POWER-ON CHECKLIST -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Final Assembly &amp; Operation</span></div>
+    <div class="ph-title">Power-On Checklist</div>
+  </div>
+  <div class="page-body">
+    <div class="cols2" style="height:auto; column-gap:8mm;">
+      <div>
+        <h3 class="sub">Before power</h3>
+        <ul class="checklist">
+          <li>[ ] microSD inserted</li>
+          <li>[ ] GPIO wiring visually checked (if any is present — see pages 22–25)</li>
+          <li>[ ] No 3.3V / 5V mix-up on any connection</li>
+          <li>[ ] LED resistors installed (if LEDs are wired)</li>
+          <li>[ ] LED polarity checked (if LEDs are wired)</li>
+          <li>[ ] OLED wiring checked (if OLED is wired)</li>
+          <li>[ ] Exactly ONE USB Wi-Fi adapter connected</li>
+          <li>[ ] No loose conductive parts near the board</li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="sub">After power</h3>
+        <ul class="checklist">
+          <li>[ ] Pi boots</li>
+          <li>[ ] Built-in Wi-Fi connects (management link)</li>
+          <li>[ ] SSH works</li>
+          <li>[ ] USB monitoring adapter detected</li>
+          <li>[ ] CIPHER <code>.venv</code> activates</li>
+          <li>[ ] Dependencies load</li>
+          <li>[ ] <code>pytest -q</code> passes</li>
+          <li>[ ] <code>preflight.py</code> passes</li>
+          <li>[ ] <code>evaluate_demo.py</code> passes</li>
+          <li>[ ] Dashboard reachable from the Windows laptop</li>
+          <li>[ ] OLED hardware test passes — <span class="pill pill-sw">once implemented</span></li>
+          <li>[ ] LED test passes — <span class="pill pill-sw">once implemented</span></li>
+          <li>[ ] Capture test passes — <span class="pill pill-sw">once implemented</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 31 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 32 — TROUBLESHOOTING I -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Final Assembly &amp; Operation</span></div>
+    <div class="ph-title">Troubleshooting (I of II)</div>
+  </div>
+  <div class="page-body">
+    <div class="tgrid fill">
+      <div class="tcard"><div class="symptom">Pi does not boot</div>
+        <div class="row"><b>Check:</b> power LED status, microSD fully seated</div>
+        <div class="row"><b>Likely cause:</b> corrupt image, bad card, insufficient power</div>
+        <div class="row"><b>Safe next action:</b> re-flash the microSD with Raspberry Pi Imager</div></div>
+      <div class="tcard"><div class="symptom">Power warning shown</div>
+        <div class="row"><b>Check:</b> the supply's rated wattage/amperage</div>
+        <div class="row"><b>Likely cause:</b> under-rated or damaged USB-C supply/cable</div>
+        <div class="row"><b>Safe next action:</b> use the official/rated Pi 4 power supply</div></div>
+      <div class="tcard"><div class="symptom">SSH unavailable</div>
+        <div class="row"><b>Check:</b> SSH was enabled during imaging; correct hostname/IP</div>
+        <div class="row"><b>Likely cause:</b> SSH not enabled, or wrong address</div>
+        <div class="row"><b>Safe next action:</b> re-check router client list; re-image if needed</div></div>
+      <div class="tcard"><div class="symptom">Built-in Wi-Fi unavailable</div>
+        <div class="row"><b>Check:</b> <code>ip link</code>, <code>iw dev</code> output</div>
+        <div class="row"><b>Likely cause:</b> wrong SSID/credentials at imaging time</div>
+        <div class="row"><b>Safe next action:</b> re-run Imager's Wi-Fi configuration step</div></div>
+      <div class="tcard"><div class="symptom">USB Wi-Fi adapter not detected</div>
+        <div class="row"><b>Check:</b> <code>lsusb</code> output, cable/port seating</div>
+        <div class="row"><b>Likely cause:</b> unsupported chipset, faulty port</div>
+        <div class="row"><b>Safe next action:</b> try another USB port; confirm adapter model</div></div>
+      <div class="tcard"><div class="symptom">Monitor mode unsupported</div>
+        <div class="row"><b>Check:</b> <code>iw list</code> supported interface modes</div>
+        <div class="row"><b>Likely cause:</b> chipset/driver does not support monitor mode</div>
+        <div class="row"><b>Safe next action:</b> record chipset; treat capture as pending</div></div>
+      <div class="tcard"><div class="symptom">Driver missing for adapter</div>
+        <div class="row"><b>Check:</b> <code>dmesg</code> for load errors after plugging in</div>
+        <div class="row"><b>Likely cause:</b> out-of-tree driver not present in this OS image</div>
+        <div class="row"><b>Safe next action:</b> confirm adapter's Linux driver support before proceeding</div></div>
+      <div class="tcard"><div class="symptom">Dashboard inaccessible from laptop</div>
+        <div class="row"><b>Check:</b> <code>FLASK_HOST</code>, Pi IP, same trusted network</div>
+        <div class="row"><b>Likely cause:</b> still bound to 127.0.0.1</div>
+        <div class="row"><b>Safe next action:</b> set <code>FLASK_HOST=0.0.0.0</code> and restart (page 21)</div></div>
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 32 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 33 — TROUBLESHOOTING II + PRESENTATION MODE -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Final Assembly &amp; Operation</span></div>
+    <div class="ph-title">Troubleshooting (II of II) &amp; Presentation Mode</div>
+  </div>
+  <div class="page-body">
+    <div class="tgrid">
+      <div class="tcard"><div class="symptom">OLED not detected</div>
+        <div class="row"><b>Check:</b> I²C enabled, wiring against approved map (once frozen)</div>
+        <div class="row"><b>Likely cause:</b> I²C disabled, or wiring not yet approved/frozen</div>
+        <div class="row"><b>Safe next action:</b> confirm GPIO assignment page has been finalized first</div></div>
+      <div class="tcard"><div class="symptom">OLED blank</div>
+        <div class="row"><b>Check:</b> power/GND connections, module orientation</div>
+        <div class="row"><b>Likely cause:</b> loose connection, wrong I²C address</div>
+        <div class="row"><b>Safe next action:</b> re-check each connection against the frozen wiring table</div></div>
+      <div class="tcard"><div class="symptom">LED not lighting / wrong colour</div>
+        <div class="row"><b>Check:</b> polarity, resistor present, correct GPIO pin</div>
+        <div class="row"><b>Likely cause:</b> reversed polarity or wrong pin</div>
+        <div class="row"><b>Safe next action:</b> verify against the frozen wiring table, not memory</div></div>
+      <div class="tcard"><div class="symptom">Python dependency failure</div>
+        <div class="row"><b>Check:</b> fresh <code>.venv</code>, exact <code>requirements.txt</code> pins</div>
+        <div class="row"><b>Likely cause:</b> reused Windows venv, or partial install</div>
+        <div class="row"><b>Safe next action:</b> recreate <code>.venv</code> per page 17</div></div>
+      <div class="tcard"><div class="symptom">ML model unavailable</div>
+        <div class="row"><b>Check:</b> <code>ml/artifacts/anomaly_detector.joblib</code> present</div>
+        <div class="row"><b>Likely cause:</b> model not trained on this machine yet</div>
+        <div class="row"><b>Safe next action:</b> not a blocker — QRS-only mode is normal; retrain if needed (page 20)</div></div>
+      <div class="tcard"><div class="symptom">Capture permission error</div>
+        <div class="row"><b>Check:</b> privileges required for raw packet capture on Linux</div>
+        <div class="row"><b>Likely cause:</b> capture not implemented yet (page 26) or missing capability</div>
+        <div class="row"><b>Safe next action:</b> treat as pending; do not grant broad root access ad hoc</div></div>
+      <div class="tcard"><div class="symptom">Report generation failure</div>
+        <div class="row"><b>Check:</b> signing keys in <code>data/keys/</code>, disk space</div>
+        <div class="row"><b>Likely cause:</b> incomplete ML-DSA-44 keypair</div>
+        <div class="row"><b>Safe next action:</b> restore the missing key file or let CIPHER regenerate both</div></div>
+      <div class="tcard"><div class="symptom">Firewall/enforcement issue</div>
+        <div class="row"><b>Check:</b> current backend in use</div>
+        <div class="row"><b>Likely cause:</b> Linux enforcement is not implemented (by design, page 27)</div>
+        <div class="row"><b>Safe next action:</b> confirm <code>NoOpIsolationBackend</code> is in use; do not apply manual firewall rules</div></div>
+    </div>
+    <h3 class="sub" style="margin-top:4mm;">Presentation / demonstration order</h3>
+    <p class="lead" style="margin-bottom:1.5mm;">Follows existing CIPHER capabilities; the controlled demo remains the reliable fallback throughout.</p>
+    <ol style="font-size:10.5px; color:#334155; margin:0; padding-left:5mm; line-height:1.7;">
+      <li>Pi boots</li><li>SSH / management connection verified</li><li>CIPHER preflight (<code>preflight.py</code>)</li>
+      <li>Dashboard opened on the laptop</li><li>Controlled PCAP demo (<code>run_demo.py</code> fixture)</li>
+      <li>Live Pi capture — only if implemented and stable</li><li>OLED / LEDs — only if implemented</li>
+      <li>Generated, signed PDF report</li><li>Enforcement decision demo, per the current safe implementation</li>
+    </ol>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 33 / 34</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- PAGE 34 — STATUS TABLE -->
+<!-- ============================================================ -->
+<div class="page">
+  <div class="page-header">
+    <div class="ph-brand"><span class="mark">CIPHER</span><span class="sec">Final Assembly &amp; Operation</span></div>
+    <div class="ph-title">Hardware &amp; Software Status Table</div>
+  </div>
+  <div class="page-body">
+    <table class="tbl compact">
+      <tr><th>Capability</th><th>Current status</th><th>Verified on Pi?</th></tr>
+      <tr><td>Core CIPHER pipeline (capture → fingerprint → entropy → risk)</td><td><span class="pill pill-impl">Implemented</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">Yes — at the 649-test baseline</span></td></tr>
+      <tr><td>Quantum Risk Score (QRS)</td><td><span class="pill pill-impl">Implemented</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">Yes — at the 649-test baseline</span></td></tr>
+      <tr><td>Isolation Forest (optional)</td><td><span class="pill pill-impl">Implemented</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">Yes — artifact trained on the Pi; preflight passed</span></td></tr>
+      <tr><td>Signed PDF report generation</td><td><span class="pill pill-impl">Implemented</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">Covered by the Pi test run</span></td></tr>
+      <tr><td>ML-DSA-44 signing</td><td><span class="pill pill-impl">Implemented</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">Covered by the Pi test run</span></td></tr>
+      <tr><td>REST API + dashboard</td><td><span class="pill pill-impl">Implemented</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">Not yet confirmed from the laptop browser</span></td></tr>
+      <tr><td>Built-in management Wi-Fi</td><td><span class="pill pill-impl">OS-level, implemented</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">Yes — SSH and management worked throughout</span></td></tr>
+      <tr><td>Current 1192-test baseline</td><td><span class="pill pill-impl">Implemented (Windows)</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"><b>No — not yet pulled or re-verified on the Pi</b></span></td></tr>
+      <tr><td>USB monitor adapter — <b>hardware</b></td><td><span class="pill pill-impl">Hardware capability verified</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">Yes — monitor mode + <code>tcpdump</code> PCAP</span></td></tr>
+      <tr><td>USB monitor adapter — <b>CIPHER ingestion</b></td><td><span class="pill pill-sw">Software pending</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">No — no Radiotap/802.11 capture source exists</span></td></tr>
+      <tr><td>Multi-device live capture</td><td><span class="pill pill-sw">Software pending</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">No</span></td></tr>
+      <tr><td>Pi performance benchmark</td><td><span class="pill pill-sw">Harness implemented</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline"><b>No — pending execution</b></span></td></tr>
+      <tr><td>OLED</td><td><span class="pill pill-hw">Hardware integration pending</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">No — no driver code</span></td></tr>
+      <tr><td>Status LEDs</td><td><span class="pill pill-hw">Hardware integration pending</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">No — no driver code</span></td></tr>
+      <tr><td>Linux enforcement (firewall isolation)</td><td><span class="pill pill-sw">Software pending</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">No — <code>NoOpIsolationBackend</code> only</span></td></tr>
+      <tr><td>Physical isolation latency</td><td><span class="pill pill-sw">Not measured</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">No</span></td></tr>
+      <tr><td>systemd service</td><td><span class="pill pill-sw">Software pending</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">No</span></td></tr>
+      <tr><td>Sustained (72-hour) operation</td><td><span class="pill pill-sw">Not yet validated</span></td><td class="resultbox" style="border:none;padding:0;"><span class="rline">No</span></td></tr>
+    </table>
+    <div class="panel panel-info" style="margin-top:4mm;">
+      <div class="ptitle">Populate truthfully</div>
+      Fill the "Verified on Pi?" column only from actual repository inspection and actual tests run on real Pi hardware
+      — never from assumption or from Windows results.
+    </div>
+  </div>
+  <div class="page-footer"><span>CIPHER Raspberry Pi Hardware Assembly Manual · v1.1</span><span class="pnum">Page 34 / 34</span></div>
+</div>
+
+</div>
+</body>
+</html>
