@@ -54,6 +54,7 @@ Usage:
     python run_pi_live.py --list-interfaces
     python run_pi_live.py --interface eth0 --timeout 60 --packet-limit 1000
     python run_pi_live.py --interface eth0 --enforcement iptables   # real DROP rules
+    python run_pi_live.py --interface eth0 --display oled --leds gpio --led-pins 17,27,22
 """
 from __future__ import annotations
 
@@ -82,7 +83,15 @@ from enforcement import (
 )
 from enforcement.backends import IsolationBackend
 from enforcement.subprocess_runner import SubprocessCommandRunner
-from hardware import NoOpStatusDisplay, SSD1306StatusDisplay, StatusDisplay
+from hardware import (
+    GPIOStatusIndicator,
+    InvalidPinConfigurationError,
+    NoOpStatusDisplay,
+    NoOpStatusIndicator,
+    SSD1306StatusDisplay,
+    StatusDisplay,
+    StatusIndicator,
+)
 from ml.loading import load_anomaly_detector
 from models.device_assessment import DeviceAssessment
 from models.report_metadata import ReportMetadata
@@ -150,6 +159,28 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "SSD1306 panel over I2C on a Raspberry Pi; it is optional, output-only, "
             "and a display fault never affects capture or enforcement. May also be "
             "given as the CIPHER_DISPLAY environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--leds",
+        choices=("none", "gpio"),
+        default=None,
+        help=(
+            "Status LEDs. 'none' (the default) drives nothing. 'gpio' lights one of "
+            "three LEDs for the assessed risk category (LOW green, MEDIUM amber, HIGH "
+            "red) on a Raspberry Pi; it is optional, output-only, and a GPIO fault "
+            "never affects capture or enforcement. Requires --led-pins. May also be "
+            "given as the CIPHER_LEDS environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--led-pins",
+        default=None,
+        help=(
+            "Three comma-separated BCM pin numbers for the green, amber and red LEDs, "
+            "in that order, e.g. --led-pins 17,27,22. Required by --leds gpio: no pin "
+            "is ever defaulted, because the physical wiring is not frozen yet. May "
+            "also be given as the CIPHER_LED_PINS environment variable."
         ),
     )
     parser.add_argument(
@@ -222,7 +253,12 @@ def _build_status_display(mode: str) -> StatusDisplay:
 
 
 def _print_disclaimer(
-    interface: str, timeout: float, packet_limit: int, enforcement: str
+    interface: str,
+    timeout: float,
+    packet_limit: int,
+    enforcement: str,
+    display_mode: str = "none",
+    led_mode: str = "none",
 ) -> None:
     print("")
     print(f"{APP_NAME} v{APP_VERSION} - live network capture (capture only)")
@@ -238,6 +274,7 @@ def _print_disclaimer(
         print("               Effective only for traffic that traverses this host.")
     else:
         print("Enforcement:   NONE - isolation decisions are recorded, never enforced")
+    print(f"Display:       {display_mode}    LEDs: {led_mode}")
     print("Decryption:    NONE - no WPA/WPA2/WPA3 decryption, no deauthentication")
     print("Device identity is each packet's own source IP address, never this host's.")
     print("Run this only on an interface you are authorized to capture on.")
@@ -264,6 +301,79 @@ def _print_results(assessments: List[DeviceAssessment], report_count: int, count
             f"{assessment.final_category.value:<10}"
             f"{status}"
         )
+
+
+def _parse_led_pins(raw: Optional[str]) -> List[int]:
+    """Parse "green,amber,red" BCM pin numbers from the CLI/environment.
+
+    Raises InvalidPinConfigurationError for anything that is not three
+    integers; the deeper validation (BCM range, no duplicates) belongs to
+    hardware.validate_pins and happens when the indicator is built.
+    """
+    if not raw or not raw.strip():
+        raise InvalidPinConfigurationError(
+            "--leds gpio requires --led-pins <green,amber,red>, for example "
+            "--led-pins 17,27,22. No GPIO pin is ever defaulted."
+        )
+
+    parts = [part.strip() for part in raw.split(",")]
+    try:
+        pins = [int(part) for part in parts]
+    except ValueError as exc:
+        raise InvalidPinConfigurationError(
+            f"could not read GPIO pin numbers from {raw!r}: expected three "
+            "comma-separated integers, for example 17,27,22"
+        ) from exc
+
+    if len(pins) != 3:
+        raise InvalidPinConfigurationError(
+            f"expected exactly three comma-separated GPIO pins (green,amber,red), "
+            f"got {len(pins)} in {raw!r}"
+        )
+    return pins
+
+
+def _build_status_indicator(mode: str, pins_raw: Optional[str]) -> StatusIndicator:
+    """Construct the selected status indicator.
+
+    Real GPIO is explicit and Linux-only, for the same reason the OLED and
+    the iptables backend are: a Windows run (or a Windows test importing
+    this module) must not reach for a GPIO pin. LEDs are never enabled
+    implicitly, and NoOpStatusIndicator is the default.
+
+    A bad pin configuration is an operator error worth stopping for, so
+    InvalidPinConfigurationError propagates to main() rather than being
+    silently downgraded to "no LEDs".
+    """
+    if mode != "gpio":
+        return NoOpStatusIndicator()
+
+    if platform.system() != "Linux":
+        logger.warning(
+            "--leds gpio requires Linux; this host reports %r. Continuing with no "
+            "status LEDs.",
+            platform.system(),
+        )
+        return NoOpStatusIndicator()
+
+    green, amber, red = _parse_led_pins(pins_raw)
+    return GPIOStatusIndicator(green_pin=green, amber_pin=amber, red_pin=red)
+
+
+def _build_assessment_observer(display: StatusDisplay, indicator: StatusIndicator):
+    """Fan one assessment out to both output devices.
+
+    Each call is wrapped separately so a fault in one device cannot stop
+    the other from updating; pipeline.runner additionally wraps the whole
+    observer, so neither can cost a packet. Output only — the assessment is
+    read, never modified, and the return value is discarded.
+    """
+
+    def _observe(assessment: DeviceAssessment) -> None:
+        _safe_display("assessment frame", display.show_assessment, assessment)
+        _safe_display("assessment lamp", indicator.show_assessment, assessment)
+
+    return _observe
 
 
 def _safe_display(action: str, call, *args) -> None:
@@ -344,19 +454,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
 
+    led_mode = (args.leds or os.environ.get("CIPHER_LEDS") or "none").lower()
+    if led_mode not in ("none", "gpio"):
+        print(
+            f"Unrecognized LED mode {led_mode!r}. Expected 'none' or 'gpio'.",
+            file=sys.stderr,
+        )
+        return 2
+    led_pins_raw = args.led_pins or os.environ.get("CIPHER_LED_PINS")
+
     settings = load_settings()
     configure_logging(settings)
     # So /api/health and any report metadata reflect what actually ran.
     # Nothing else about Settings is altered, and no file is written.
     settings = replace(settings, capture_mode="live", live_interface=interface)
 
-    _print_disclaimer(interface, args.timeout, args.packet_limit, enforcement_mode)
+    _print_disclaimer(
+        interface,
+        args.timeout,
+        args.packet_limit,
+        enforcement_mode,
+        display_mode,
+        led_mode,
+    )
 
     # Output-only, optional, and never fatal: if the panel cannot be opened
     # the run continues with no display at all.
     display = _build_status_display(display_mode)
+    try:
+        indicator = _build_status_indicator(led_mode, led_pins_raw)
+    except InvalidPinConfigurationError as exc:
+        print(f"Invalid LED configuration: {exc}", file=sys.stderr)
+        return 2
+
     _safe_display("start", display.start)
     _safe_display("ready frame", display.show_ready, interface, enforcement_mode)
+    _safe_display("LED start", indicator.start)
+    _safe_display("LED ready state", indicator.show_ready)
     assessments: Optional[List[DeviceAssessment]] = None
     reports: Optional[List[Tuple[Path, ReportMetadata]]] = None
 
@@ -379,8 +513,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             isolation_backend,
             risk_isolation_threshold=settings.risk_isolation_threshold,
             # pipeline.runner wraps every observer call in its own
-            # try/except, so a display fault here cannot cost a packet.
-            assessment_observer=display.show_assessment,
+            # try/except, and the observer wraps each output device
+            # separately, so no display or LED fault can cost a packet.
+            assessment_observer=_build_assessment_observer(display, indicator),
         )
     except CipherError as exc:
         logger.error("Live capture run failed.", exc_info=True)
@@ -394,6 +529,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # keeps showing a stale mid-capture frame.
         _safe_display("final frames", _show_final_frames, display, assessments, reports)
         _safe_display("shutdown", display.close)
+        # LEDs go out at shutdown: a lamp left lit would keep asserting a
+        # risk state for a run that is no longer happening.
+        _safe_display("LED shutdown", indicator.close)
 
     _print_results(assessments, len(reports), capture_source.counters)
     return 0

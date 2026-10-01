@@ -316,7 +316,7 @@ From the project bill of materials
 | 1 | Pi 4 USB-C power supply | Adequately rated | In use |
 | **1 (exactly one)** | Qualcomm Atheros AR9271 USB Wi-Fi adapter | Monitor-mode capture (`ath9k_htc`) | Hardware capability verified |
 | 1 | SSD1306 I²C OLED | Status display | Optional driver implemented (`hardware/`); wiring/pin map still pending, not yet validated on hardware |
-| 3 | Green / amber / red LEDs | LOW / MEDIUM / HIGH indicators | Hardware pending — no driver code |
+| 3 | Green / amber / red LEDs | LOW / MEDIUM / HIGH indicators | Optional driver implemented (`hardware/`); wiring/pin map still pending, not yet validated on hardware |
 | 3+ | Current-limiting resistors | One per LED | Hardware pending |
 | as needed | Male-to-female jumper wires | Breadboard ↔ GPIO header | Hardware pending |
 
@@ -326,7 +326,7 @@ connectivity and is never repurposed for capture, while the external AR9271
 interface is used for monitor-mode work. Interface names are deployment-specific
 and should be read from `ip link` / `iw dev` rather than assumed.
 
-**OLED status output is implemented and optional; GPIO LED code does not exist.**
+**OLED and LED status output are implemented and optional.**
 The `hardware/` package provides an optional SSD1306-over-I²C status display,
 enabled only by `python run_pi_live.py --interface <name> --display oled` (or
 `CIPHER_DISPLAY=oled`). It is **output only** — it renders the device IP, the raw
@@ -346,10 +346,31 @@ disabled or absent I²C bus, a permission error, or a failed write is logged and
 the run continues unaffected — capture, assessment, isolation and reporting never
 depend on the panel.
 
-**Not yet validated on hardware.** No SSD1306 panel has been wired or driven by
-this code; the pin map in the hardware manual remains pending, and the tests
-drive an injected fake device rather than a real bus. The three status LEDs have
-no driver code at all.
+**Status LEDs.** `--leds gpio --led-pins <green,amber,red>` lights exactly one of
+three LEDs for the risk category CIPHER already computed: **green = LOW, amber =
+MEDIUM, red = HIGH**, which is the mapping the hardware manual records as the
+approved intent. The LEDs read the already-fused `final_category` only — they
+never recompute QRS, re-derive fusion, or read an anomaly score — and they carry
+**no isolation state**, which would either override the risk colour or need blink
+codes; the OLED already shows isolation in full. Exactly one lamp is lit at a
+time, an unchanged risk state issues no GPIO writes at all, and the lamps are
+driven off at startup and again at shutdown.
+
+**GPIO pin numbers are never hardcoded.** There is no default: all three BCM pins
+must be given explicitly (`--led-pins 17,27,22` is only an example, not a
+proposed CIPHER pin map), because the physical wiring is still pending. They are
+validated as three distinct integers inside BCM range 0–27 before any pin is
+touched, and a bad set stops the run with a clear message instead of silently
+disabling the LEDs. CIPHER releases only its own pins at shutdown and performs no
+global GPIO reset. The optional Pi-only driver is installed with
+`pip install gpiozero lgpio` — `gpiozero` on an `lgpio` backend, which is the
+path Raspberry Pi OS supports on Debian 13; `RPi.GPIO` is deliberately not used.
+As with the OLED, every failure — missing library, permission denial, busy pin,
+failed write or failed cleanup — is logged and the run continues unaffected.
+
+**Not yet validated on hardware.** No SSD1306 panel and no LED has been wired or
+driven by this code; the pin map in the hardware manual remains pending, and the
+tests drive injected fake devices rather than a real bus or real pins.
 
 ---
 
@@ -754,7 +775,7 @@ not a certification, endorsement or validation of CIPHER itself.
 | Physical network isolation (`iptables`) | Implemented as an opt-in Linux backend: idempotent DROP rules for one IPv4 device in the CIPHER-owned `CIPHER_ISOLATION` chain, jumped from `FORWARD` only. Requires an authorized Linux enforcement point on the device's traffic path and root/`CAP_NET_ADMIN`. **A passive monitor-mode interface is not an enforcement path** — on a monitor-only topology the rule is installed and drops nothing. Never enabled implicitly; Windows remains NoOp. Not yet exercised on Pi hardware |
 | Physical isolation latency | Not measured |
 | SSD1306 OLED integration | Optional driver implemented (`hardware/`, I²C only, `--display oled`); **not validated on hardware** — no panel has been wired or driven, pin map still pending |
-| GPIO status LED integration | Not implemented; no driver code, pin map pending |
+| GPIO status LED integration | Optional driver implemented (`hardware/`, `gpiozero`, `--leds gpio`); pins always configured explicitly, never defaulted; **not validated on hardware** — no LED has been wired or driven, pin map still pending |
 | Sustained long-duration Pi operation | Not validated |
 
 ---
@@ -777,9 +798,9 @@ The following are **not implemented** and are recorded as intended future work.
 - **Physical enforcement** — a real Linux firewall backend, including the policy
   decisions (chain, direction, `DROP` versus `REJECT`, restoration) that the
   current specification does not define.
-- **OLED hardware validation and GPIO status output** — wiring the SSD1306 panel
-  against a frozen pin map and confirming the implemented driver on real
-  hardware, plus driver code for the three status LEDs.
+- **OLED and LED hardware validation** — wiring the SSD1306 panel and the three
+  status LEDs against a frozen pin map and confirming the implemented drivers on
+  real hardware.
 - **Cooperating-device post-quantum secure channel** — extending beyond passive
   assessment toward PQC-protected communication between cooperating devices.
 - **Broader protocol coverage** — Zigbee, BLE and other non-IP IoT link layers.

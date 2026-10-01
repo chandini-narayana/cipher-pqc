@@ -19,7 +19,14 @@ import run_pi_live
 from capture.base import CaptureSource
 from capture.raw_packet import RawPacket
 from enforcement import NoOpIsolationBackend
-from hardware import NoOpStatusDisplay, SSD1306StatusDisplay
+from hardware import (
+    GPIOStatusIndicator,
+    InvalidPinConfigurationError,
+    NoOpStatusDisplay,
+    NoOpStatusIndicator,
+    SSD1306StatusDisplay,
+)
+from hardware.indicator import StatusIndicator as StatusIndicatorBase
 from hardware.display import StatusDisplay
 from models.device import Device
 from models.device_assessment import DeviceAssessment
@@ -443,3 +450,311 @@ def test_an_interrupted_run_leaves_a_stopped_frame() -> None:
     run_pi_live._show_final_frames(display, None, None)
 
     assert display.frames == [["CIPHER", "Status: STOPPED"]]
+
+
+# --- Phase 3G: LED indicator integration ---------------------------------
+
+
+class _RecordingIndicator(StatusIndicatorBase):
+    indicator_name = "recording"
+
+    def __init__(self) -> None:
+        self.lamps: List[Optional[str]] = []
+        self.started = False
+        self.closed = False
+
+    def start(self) -> bool:
+        self.started = True
+        return True
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def show_lamp(self, lamp: Optional[str]) -> None:
+        self.lamps.append(lamp)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _HostileIndicator(StatusIndicatorBase):
+    """Raises on every call - the worst-case indicator."""
+
+    indicator_name = "hostile"
+
+    def start(self) -> bool:
+        raise RuntimeError("LED start exploded")
+
+    def show_lamp(self, lamp: Optional[str]) -> None:
+        raise RuntimeError("LED write exploded")
+
+    def close(self) -> None:
+        raise RuntimeError("LED cleanup exploded")
+
+
+def test_leds_default_to_disabled(stubbed) -> None:
+    """Nothing GPIO-facing is ever enabled implicitly."""
+    built = {}
+    original = run_pi_live._build_status_indicator
+
+    def _spy(mode, pins_raw):
+        built["mode"] = mode
+        return original(mode, pins_raw)
+
+    run_pi_live._build_status_indicator = _spy
+    try:
+        assert run_pi_live.main(["--interface", "eth0"]) == 0
+    finally:
+        run_pi_live._build_status_indicator = original
+
+    assert built["mode"] == "none"
+
+
+def test_the_default_indicator_is_the_noop_one() -> None:
+    assert isinstance(run_pi_live._build_status_indicator("none", None), NoOpStatusIndicator)
+
+
+def test_gpio_leds_are_refused_off_linux(monkeypatch, caplog) -> None:
+    """A Windows run must not reach for a GPIO pin even if asked."""
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Windows")
+
+    with caplog.at_level("WARNING", logger="run_pi_live"):
+        indicator = run_pi_live._build_status_indicator("gpio", "17,27,22")
+
+    assert isinstance(indicator, NoOpStatusIndicator)
+    assert any("requires Linux" in r.getMessage() for r in caplog.records)
+
+
+def test_gpio_leds_build_the_adapter_on_linux(monkeypatch) -> None:
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+
+    indicator = run_pi_live._build_status_indicator("gpio", "17,27,22")
+
+    assert isinstance(indicator, GPIOStatusIndicator)
+    assert indicator.pins == {"green": 17, "amber": 27, "red": 22}
+    # Constructed, but no pin acquired: only start() does that.
+    assert indicator.available is False
+
+
+def test_gpio_leds_require_explicit_pins(monkeypatch) -> None:
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+
+    with pytest.raises(InvalidPinConfigurationError):
+        run_pi_live._build_status_indicator("gpio", None)
+
+
+@pytest.mark.parametrize("raw", ["17,27", "17,27,22,23", "a,b,c", "17;27;22", ""])
+def test_a_malformed_pin_list_is_rejected(monkeypatch, raw) -> None:
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+
+    with pytest.raises(InvalidPinConfigurationError):
+        run_pi_live._build_status_indicator("gpio", raw)
+
+
+def test_duplicate_pins_are_rejected_at_composition(monkeypatch) -> None:
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+
+    with pytest.raises(InvalidPinConfigurationError):
+        run_pi_live._build_status_indicator("gpio", "17,17,22")
+
+
+def test_an_invalid_pin_configuration_exits_with_a_clear_message(
+    monkeypatch, stubbed, capsys
+) -> None:
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+
+    exit_code = run_pi_live.main(
+        ["--interface", "eth0", "--leds", "gpio", "--led-pins", "17,17,22"]
+    )
+
+    assert exit_code == 2
+    assert "Invalid LED configuration" in capsys.readouterr().err
+
+
+def test_leds_may_be_selected_from_the_environment(monkeypatch, stubbed) -> None:
+    monkeypatch.setenv("CIPHER_LEDS", "gpio")
+    monkeypatch.setenv("CIPHER_LED_PINS", "5,6,13")
+    built = {}
+    original = run_pi_live._build_status_indicator
+
+    def _spy(mode, pins_raw):
+        built["mode"] = mode
+        built["pins"] = pins_raw
+        return NoOpStatusIndicator()
+
+    run_pi_live._build_status_indicator = _spy
+    try:
+        run_pi_live.main(["--interface", "eth0"])
+    finally:
+        run_pi_live._build_status_indicator = original
+
+    assert built["mode"] == "gpio"
+    assert built["pins"] == "5,6,13"
+
+
+def test_an_explicit_led_flag_beats_the_environment(monkeypatch, stubbed) -> None:
+    monkeypatch.setenv("CIPHER_LEDS", "gpio")
+    built = {}
+    original = run_pi_live._build_status_indicator
+
+    def _spy(mode, pins_raw):
+        built["mode"] = mode
+        return NoOpStatusIndicator()
+
+    run_pi_live._build_status_indicator = _spy
+    try:
+        run_pi_live.main(["--interface", "eth0", "--leds", "none"])
+    finally:
+        run_pi_live._build_status_indicator = original
+
+    assert built["mode"] == "none"
+
+
+def test_an_unrecognized_led_mode_is_refused(monkeypatch, stubbed, capsys) -> None:
+    monkeypatch.setenv("CIPHER_LEDS", "neopixel")
+
+    assert run_pi_live.main(["--interface", "eth0"]) == 2
+    assert "Unrecognized LED mode" in capsys.readouterr().err
+
+
+# --- LED lifecycle through the runtime -----------------------------------
+
+
+def test_the_indicator_is_started_and_closed(monkeypatch, stubbed) -> None:
+    indicator = _RecordingIndicator()
+    monkeypatch.setattr(run_pi_live, "_build_status_indicator", lambda mode, pins: indicator)
+
+    run_pi_live.main(["--interface", "eth0"])
+
+    assert indicator.started is True
+    assert indicator.closed is True
+
+
+def test_the_leds_start_off_and_end_off(monkeypatch, stubbed) -> None:
+    """The LEDs are a LIVE indicator, driven by the assessment observer
+    during capture (covered below). The run itself only brackets them: all
+    off at ready, and off again at shutdown, so a lamp is never left
+    asserting a risk state for a run that has finished."""
+    indicator = _RecordingIndicator()
+    monkeypatch.setattr(run_pi_live, "_build_status_indicator", lambda mode, pins: indicator)
+
+    run_pi_live.main(["--interface", "eth0"])
+
+    assert indicator.lamps[0] is None
+    assert indicator.closed is True
+
+
+def test_a_hostile_indicator_does_not_stop_the_run(monkeypatch, stubbed) -> None:
+    """start(), show_lamp() and close() all raise: the run must still
+    succeed, because the LEDs are an optional output device."""
+    monkeypatch.setattr(
+        run_pi_live, "_build_status_indicator", lambda mode, pins: _HostileIndicator()
+    )
+
+    assert run_pi_live.main(["--interface", "eth0"]) == 0
+
+
+def test_a_failing_indicator_does_not_stop_the_oled(monkeypatch, stubbed) -> None:
+    """Each output device is wrapped separately, so one failing cannot
+    silence the other."""
+    display = _RecordingDisplay()
+    monkeypatch.setattr(run_pi_live, "_build_status_display", lambda mode: display)
+    monkeypatch.setattr(
+        run_pi_live, "_build_status_indicator", lambda mode, pins: _HostileIndicator()
+    )
+
+    assert run_pi_live.main(["--interface", "eth0"]) == 0
+    flattened = [" | ".join(frame) for frame in display.frames]
+    assert any("Device: 192.168.50.21" in frame for frame in flattened)
+
+
+def test_a_failing_oled_does_not_stop_the_leds(monkeypatch) -> None:
+    """Each output device is wrapped separately, so an exploding OLED
+    cannot stop the LEDs from being updated."""
+    indicator = _RecordingIndicator()
+    observer = run_pi_live._build_assessment_observer(_HostileDisplay(), indicator)
+
+    observer(_assessment("10.0.0.5", 9, RiskCategory.HIGH))
+
+    assert indicator.lamps == ["red"]
+
+
+def test_a_failing_oled_does_not_stop_a_full_led_run(monkeypatch, stubbed) -> None:
+    indicator = _RecordingIndicator()
+    monkeypatch.setattr(run_pi_live, "_build_status_display", lambda mode: _HostileDisplay())
+    monkeypatch.setattr(run_pi_live, "_build_status_indicator", lambda mode, pins: indicator)
+
+    assert run_pi_live.main(["--interface", "eth0"]) == 0
+    assert indicator.started is True
+    assert indicator.closed is True
+
+
+def test_the_observer_updates_both_output_devices() -> None:
+    """One assessment, both devices, through the single existing hook - no
+    second packet-processing path was added."""
+    display = _RecordingDisplay()
+    indicator = _RecordingIndicator()
+    observer = run_pi_live._build_assessment_observer(display, indicator)
+
+    observer(_assessment("10.0.0.5", 9, RiskCategory.HIGH))
+
+    assert display.frames
+    assert indicator.lamps == ["red"]
+
+
+def test_the_observer_runs_through_the_existing_pipeline_hook(monkeypatch) -> None:
+    display = _RecordingDisplay()
+    indicator = _RecordingIndicator()
+    _patch_assess(monkeypatch, {"10.0.0.5": _assessment("10.0.0.5", 5, RiskCategory.MEDIUM)})
+
+    run_capture(
+        _FakeCaptureSource([_raw_packet("10.0.0.5")]),
+        None,
+        *_KEYS,
+        isolation_backend=NoOpIsolationBackend(),
+        assessment_observer=run_pi_live._build_assessment_observer(display, indicator),
+    )
+
+    assert indicator.lamps == ["amber"]
+    assert display.frames
+
+
+def test_an_exploding_indicator_cannot_break_the_pipeline(monkeypatch) -> None:
+    display = _RecordingDisplay()
+    _patch_assess(
+        monkeypatch,
+        {
+            "10.0.0.5": _assessment("10.0.0.5", 9, RiskCategory.HIGH),
+            "10.0.0.6": _assessment("10.0.0.6", 2, RiskCategory.LOW),
+        },
+    )
+
+    assessments, _reports = run_capture(
+        _FakeCaptureSource([_raw_packet("10.0.0.5"), _raw_packet("10.0.0.6")]),
+        None,
+        *_KEYS,
+        isolation_backend=NoOpIsolationBackend(),
+        assessment_observer=run_pi_live._build_assessment_observer(display, _HostileIndicator()),
+    )
+
+    assert {a.device.ip for a in assessments} == {"10.0.0.5", "10.0.0.6"}
+    # The OLED still updated for both devices despite the LEDs exploding.
+    assert len(display.frames) == 2
+
+
+def test_isolation_state_is_unchanged_by_the_leds(monkeypatch) -> None:
+    _patch_assess(monkeypatch, {"10.0.0.5": _assessment("10.0.0.5", 9, RiskCategory.HIGH)})
+
+    assessments, _reports = run_capture(
+        _FakeCaptureSource([_raw_packet("10.0.0.5")]),
+        None,
+        *_KEYS,
+        isolation_backend=NoOpIsolationBackend(),
+        assessment_observer=run_pi_live._build_assessment_observer(
+            _RecordingDisplay(), _RecordingIndicator()
+        ),
+    )
+
+    assert assessments[0].isolation is not None
+    assert assessments[0].isolation.enforced is False
