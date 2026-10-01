@@ -190,6 +190,18 @@ from `config/constants.py`). It reads `risk_assessment.risk_score` and
 deliberately never reads `final_category`, so a device escalated to HIGH by the
 anomaly signal alone is **not** isolation-eligible.
 
+That decision is the *only* thing that can cause a firewall change. On Linux,
+`run_pi_live.py --enforcement iptables` carries an eligible device's isolation
+out for real: idempotent DROP rules for that one IPv4 address inside the
+CIPHER-owned `CIPHER_ISOLATION` chain, jumped from `FORWARD` only. CIPHER never
+flushes a chain, never alters a default policy, and never removes a rule it did
+not add; it refuses to isolate loopback, non-IPv4 or the host's own addresses;
+and `restore()` removes only that device's own rules. Enforcement requires an
+authorized Linux enforcement point on the device's traffic path — a passive
+monitor interface observes traffic rather than forwarding it, so there the rule
+is installed and drops nothing. It is never enabled implicitly, and Windows
+always uses the non-enforcing NoOp backend. See docs/SDD.md §38.
+
 ---
 
 ## 5. Isolation Forest
@@ -632,8 +644,9 @@ observations.
 
 The software enforcement decision measured 0.0005 ms mean. That is the
 `should_isolate()` call plus the NoOp backend only. **It is not physical
-isolation latency**, which remains unmeasured because no hardware enforcement
-backend exists.
+isolation latency**, which remains unmeasured: an `iptables` enforcement
+backend now exists, but no measurement of it on a real enforcement path has
+been taken, and the figure above includes no `iptables` invocation at all.
 
 **Raspberry Pi performance measurements are pending.** They will be collected
 with this same benchmark harness, which runs unchanged on ARM64 and records
@@ -717,7 +730,8 @@ not a certification, endorsement or validation of CIPHER itself.
 | AR9271 monitor mode | Hardware capability verified on the bench |
 | CIPHER monitor-mode (802.11/Radiotap) ingestion | Not implemented |
 | Raspberry Pi performance benchmark | Pending execution |
-| Physical network isolation (`iptables` or equivalent) | Not implemented |
+| Linux/Pi live network capture (real source identity preserved) | Implemented (`run_pi_live.py`); not yet exercised on Pi hardware |
+| Physical network isolation (`iptables`) | Implemented as an opt-in Linux backend: idempotent DROP rules for one IPv4 device in the CIPHER-owned `CIPHER_ISOLATION` chain, jumped from `FORWARD` only. Requires an authorized Linux enforcement point on the device's traffic path and root/`CAP_NET_ADMIN`. **A passive monitor-mode interface is not an enforcement path** — on a monitor-only topology the rule is installed and drops nothing. Never enabled implicitly; Windows remains NoOp. Not yet exercised on Pi hardware |
 | Physical isolation latency | Not measured |
 | SSD1306 OLED integration | Not implemented; no driver code, pin map pending |
 | GPIO status LED integration | Not implemented; no driver code, pin map pending |

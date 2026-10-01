@@ -171,9 +171,10 @@ def test_the_isolation_threshold_comes_from_settings(stubbed) -> None:
     assert calls["kwargs"]["risk_isolation_threshold"] == DEFAULT_RISK_ISOLATION_THRESHOLD
 
 
-def test_no_linux_enforcement_backend_is_constructed() -> None:
-    """Phase 3C is capture only — this module must not reach for the
-    Linux backend, and must contain no firewall vocabulary."""
+def test_no_nftables_or_other_firewall_technology_is_used() -> None:
+    """Phase 3D froze iptables as the one enforcement technology. Nothing
+    else may appear here (nor the generic, policy-free Linux seam, which
+    this entry point deliberately does not compose)."""
     import ast
     import inspect
 
@@ -184,8 +185,9 @@ def test_no_linux_enforcement_backend_is_constructed() -> None:
             imported.update(alias.name for alias in node.names)
 
     assert "LinuxIsolationBackend" not in imported
-    for token in ("iptables", "nftables"):
-        assert token not in inspect.getsource(run_pi_live).lower()
+    source = inspect.getsource(run_pi_live).lower()
+    for token in ("nftables", "firewalld", "ufw", "shell=true"):
+        assert token not in source
 
 
 # --- output ---------------------------------------------------------------
@@ -266,3 +268,127 @@ def test_keyboard_interrupt_exits_cleanly(monkeypatch, stubbed) -> None:
     monkeypatch.setattr(run_pi_live, "run_capture", _interrupting)
 
     assert run_pi_live.main(["--interface", "eth0"]) == 130
+
+
+# --- Phase 3D: explicit enforcement selection ----------------------------
+
+
+def test_enforcement_defaults_to_noop(stubbed) -> None:
+    """Real enforcement is never implicit: with no flag and no env var,
+    the non-enforcing backend is used."""
+    from enforcement import NoOpIsolationBackend
+
+    _created, calls = stubbed
+    run_pi_live.main(["--interface", "eth0"])
+
+    assert isinstance(calls["backend"], NoOpIsolationBackend)
+
+
+def test_explicit_noop_is_accepted(stubbed) -> None:
+    from enforcement import NoOpIsolationBackend
+
+    _created, calls = stubbed
+    assert run_pi_live.main(["--interface", "eth0", "--enforcement", "noop"]) == 0
+    assert isinstance(calls["backend"], NoOpIsolationBackend)
+
+
+def test_iptables_enforcement_is_refused_off_linux(monkeypatch, stubbed, capsys) -> None:
+    """The guard that keeps Windows runs and Windows tests away from a
+    firewall even if the flag is passed."""
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Windows")
+
+    exit_code = run_pi_live.main(["--interface", "eth0", "--enforcement", "iptables"])
+
+    assert exit_code == 1
+    assert "requires Linux" in capsys.readouterr().err
+
+
+def test_iptables_enforcement_composes_the_iptables_backend_on_linux(
+    monkeypatch, stubbed
+) -> None:
+    from enforcement import IptablesIsolationBackend
+
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+    _created, calls = stubbed
+
+    assert run_pi_live.main(["--interface", "eth0", "--enforcement", "iptables"]) == 0
+    assert isinstance(calls["backend"], IptablesIsolationBackend)
+
+
+def test_the_iptables_backend_is_given_an_executing_runner(monkeypatch, stubbed) -> None:
+    """This entry point is the only place that composes a runner capable
+    of spawning a process."""
+    from enforcement.subprocess_runner import SubprocessCommandRunner
+
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+    _created, calls = stubbed
+
+    run_pi_live.main(["--interface", "eth0", "--enforcement", "iptables"])
+
+    assert isinstance(calls["backend"]._command_runner, SubprocessCommandRunner)
+
+
+def test_enforcement_may_come_from_the_environment(monkeypatch, stubbed) -> None:
+    from enforcement import IptablesIsolationBackend
+
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("CIPHER_ENFORCEMENT", "iptables")
+    _created, calls = stubbed
+
+    run_pi_live.main(["--interface", "eth0"])
+
+    assert isinstance(calls["backend"], IptablesIsolationBackend)
+
+
+def test_an_explicit_flag_beats_the_enforcement_environment(monkeypatch, stubbed) -> None:
+    from enforcement import NoOpIsolationBackend
+
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("CIPHER_ENFORCEMENT", "iptables")
+    _created, calls = stubbed
+
+    run_pi_live.main(["--interface", "eth0", "--enforcement", "noop"])
+
+    assert isinstance(calls["backend"], NoOpIsolationBackend)
+
+
+def test_an_unrecognized_enforcement_mode_is_refused(monkeypatch, stubbed, capsys) -> None:
+    monkeypatch.setenv("CIPHER_ENFORCEMENT", "nftables")
+
+    assert run_pi_live.main(["--interface", "eth0"]) == 2
+    assert "Unrecognized enforcement mode" in capsys.readouterr().err
+
+
+def test_the_disclaimer_warns_when_real_enforcement_is_active(
+    monkeypatch, stubbed, capsys
+) -> None:
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+
+    run_pi_live.main(["--interface", "eth0", "--enforcement", "iptables"])
+    out = capsys.readouterr().out
+
+    assert "IPTABLES" in out
+    assert "CIPHER_ISOLATION" in out
+    assert "never flushes" in out
+
+
+def test_the_disclaimer_states_the_forwarding_limitation(monkeypatch, stubbed, capsys) -> None:
+    """Honest about what a monitor-only topology can and cannot do."""
+    monkeypatch.setattr(run_pi_live.platform, "system", lambda: "Linux")
+
+    run_pi_live.main(["--interface", "eth0", "--enforcement", "iptables"])
+
+    assert "traverses this host" in capsys.readouterr().out
+
+
+def test_no_firewall_command_is_executed_during_a_noop_run(monkeypatch, stubbed) -> None:
+    """The Windows/default path must not reach a process spawn at all."""
+    import subprocess
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(f"a process was spawned: {args!r}")
+
+    for name in ("Popen", "run", "call", "check_call", "check_output"):
+        monkeypatch.setattr(subprocess, name, forbidden)
+
+    assert run_pi_live.main(["--interface", "eth0"]) == 0
