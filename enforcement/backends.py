@@ -36,6 +36,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from models.isolation_status import IsolationStatus
+
 logger = logging.getLogger(__name__)
 
 _UNKNOWN_BACKEND = "unknown"
@@ -68,6 +70,25 @@ class IsolationOutcome:
     enforced: bool
     reason: str
     backend: str = _UNKNOWN_BACKEND
+    enforcement_capable: bool = False
+
+    def to_status(self) -> IsolationStatus:
+        """Project this runtime outcome into the models/ type that
+        DeviceAssessment, the REST API, and the signed report consume.
+
+        `device_ip`/`risk_score` are deliberately dropped: the
+        surrounding DeviceAssessment already carries both, and two copies
+        could disagree. This is the only direction of travel — models/
+        never imports enforcement/.
+        """
+        return IsolationStatus(
+            requested=self.requested,
+            enforced=self.enforced,
+            backend=self.backend,
+            reason=self.reason,
+            requested_at=self.requested_at,
+            enforcement_capable=self.enforcement_capable,
+        )
 
 
 class IsolationBackend(ABC):
@@ -86,6 +107,11 @@ class IsolationBackend(ABC):
 
     #: Name recorded in IsolationOutcome.backend. Overridden per backend.
     backend_name: str = _UNKNOWN_BACKEND
+
+    #: Whether this backend performs real network enforcement at all.
+    #: False for every deliberately non-enforcing backend. Default False:
+    #: a backend must opt in to claiming the capability.
+    enforcement_capable: bool = False
 
     @abstractmethod
     def isolate(self, device_ip: str, risk_score: int) -> IsolationOutcome:
@@ -117,6 +143,7 @@ class IsolationBackend(ABC):
             enforced=False,
             reason=_RESTORE_UNSUPPORTED_REASON,
             backend=self.backend_name,
+            enforcement_capable=self.enforcement_capable,
         )
 
 
@@ -133,6 +160,7 @@ class NoOpIsolationBackend(IsolationBackend):
     _REASON = "Hardware enforcement unavailable in current deployment"
 
     backend_name = NOOP_BACKEND_NAME
+    enforcement_capable = False
 
     def isolate(self, device_ip: str, risk_score: int) -> IsolationOutcome:
         logger.warning(
@@ -150,4 +178,5 @@ class NoOpIsolationBackend(IsolationBackend):
             enforced=False,
             reason=self._REASON,
             backend=self.backend_name,
+            enforcement_capable=self.enforcement_capable,
         )

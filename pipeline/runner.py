@@ -41,10 +41,20 @@ selection, which is a reporting concern with a different (and looser)
 timing requirement than the Execution Report's detection-to-isolation
 target. `isolation_backend` is injected by the caller (main.py /
 run_api.py); this module never constructs a hardware backend itself.
+
+Phase 3B isolation-state propagation (see docs/SDD.md's Phase 3B
+addendum): each isolation attempt's `IsolationOutcome` is recorded per
+device IP for the duration of the run and, after EOF but *before* report
+generation, attached to that device's retained representative assessment
+as `DeviceAssessment.isolation`. That is the single seam by which
+enforcement state reaches the REST API, the dashboard and the signed
+PDF. Tracking it per device rather than per packet is deliberate and
+load-bearing — see `_attach_isolation_state`.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
@@ -58,6 +68,7 @@ from ml.classifier import AnomalyDetector
 from models.device import Device
 from models.device_assessment import DeviceAssessment
 from models.enums import RiskCategory
+from models.isolation_status import IsolationStatus
 from models.report_metadata import ReportMetadata
 from pipeline.assessment_pipeline import assess_packet
 from reports.pdf_generator import DEFAULT_REPORT_OUTPUT_DIR, generate_report, is_flagged_device
@@ -118,7 +129,10 @@ def run_capture(
     Returns:
         (retained_assessments, reports) — one assessment per observed
         device (in first-seen order), and one (path, ReportMetadata)
-        pair for every PDF actually written. Phase 12's REST API needs
+        pair for every PDF actually written. Every returned assessment for a
+        device that was handed to the backend carries that attempt's
+        `isolation` state; every other assessment carries `None`.
+        Phase 12's REST API needs
         the ReportMetadata that Phase 11 previously discarded; this is
         the smallest change that retains it — no scoring, ML, signing,
         or reporting behavior is altered.
@@ -126,6 +140,7 @@ def run_capture(
     devices: Dict[str, Device] = {}
     representatives: Dict[str, DeviceAssessment] = {}
     enforcement_attempted_ips: Set[str] = set()
+    isolation_by_ip: Dict[str, IsolationStatus] = {}
 
     for raw_packet in capture_source.read_packets():
         try:
@@ -137,6 +152,7 @@ def run_capture(
                 isolation_backend,
                 risk_isolation_threshold,
                 enforcement_attempted_ips,
+                isolation_by_ip,
             )
         except Exception:  # noqa: BLE001 - one bad packet must not abort the run
             logger.error(
@@ -147,6 +163,8 @@ def run_capture(
                 raw_packet.dst_port,
                 exc_info=True,
             )
+
+    _attach_isolation_state(representatives, isolation_by_ip)
 
     reports: List[Tuple[Path, ReportMetadata]] = []
     for ip, assessment in representatives.items():
@@ -171,6 +189,7 @@ def _process_packet(
     isolation_backend: IsolationBackend,
     risk_isolation_threshold: int,
     enforcement_attempted_ips: Set[str],
+    isolation_by_ip: Dict[str, IsolationStatus],
 ) -> None:
     device = _resolve_device(raw_packet, devices)
 
@@ -180,7 +199,11 @@ def _process_packet(
     assessment = assess_packet(raw_packet, device, port_risk, anomaly_detector)
 
     _maybe_enforce_isolation(
-        assessment, isolation_backend, risk_isolation_threshold, enforcement_attempted_ips
+        assessment,
+        isolation_backend,
+        risk_isolation_threshold,
+        enforcement_attempted_ips,
+        isolation_by_ip,
     )
 
     _update_representative(representatives, device.ip, assessment)
@@ -191,13 +214,22 @@ def _maybe_enforce_isolation(
     isolation_backend: IsolationBackend,
     threshold: int,
     enforcement_attempted_ips: Set[str],
+    isolation_by_ip: Dict[str, IsolationStatus],
 ) -> None:
     """Isolate `assessment`'s device if it just became eligible — at
     most once per device per run. Marking the device as attempted
     happens before calling the backend, so a raising/failing attempt
     still counts as "the one attempt" (no retries) and never blocks
     this packet's assessment from still being considered for
-    representative selection/reporting."""
+    representative selection/reporting.
+
+    The resulting IsolationStatus is recorded in `isolation_by_ip` (per
+    device, not per packet) and attached to the retained representative
+    after EOF by `_attach_isolation_state`. A backend that raises records
+    nothing — the failure is logged, and no isolation state is fabricated
+    for that device: the attempt is recorded as requested-but-not-enforced
+    with the exception as its reason, and `enforced` is never
+    synthesized as True."""
     ip = assessment.device.ip
     if ip in enforcement_attempted_ips:
         return
@@ -209,7 +241,7 @@ def _maybe_enforce_isolation(
 
     try:
         outcome = isolation_backend.isolate(ip, risk_score)
-    except Exception:  # noqa: BLE001 - one failed isolation attempt must not abort the run
+    except Exception as exc:  # noqa: BLE001 - one failed isolation attempt must not abort the run
         logger.error(
             "Isolation backend raised while handling device %s (QRS=%d, threshold=%d); "
             "continuing.",
@@ -218,7 +250,22 @@ def _maybe_enforce_isolation(
             threshold,
             exc_info=True,
         )
+        # A raising backend produced no outcome of its own, so the
+        # attempt is recorded here as the failure it was: requested, not
+        # enforced, with the exception as the reason. `enforced` is never
+        # synthesized as True — the only thing this fabricates is an
+        # honest record that an attempt was made and failed.
+        isolation_by_ip[ip] = IsolationStatus(
+            requested=True,
+            enforced=False,
+            backend=isolation_backend.backend_name,
+            reason=f"Isolation backend raised: {exc}",
+            requested_at=datetime.now(timezone.utc),
+            enforcement_capable=isolation_backend.enforcement_capable,
+        )
         return
+
+    isolation_by_ip[ip] = outcome.to_status()
 
     logger.info(
         "Isolation decision for device %s: QRS=%d, threshold=%d, requested=%s, "
@@ -230,6 +277,43 @@ def _maybe_enforce_isolation(
         outcome.enforced,
         outcome.reason,
     )
+
+
+def _attach_isolation_state(
+    representatives: Dict[str, DeviceAssessment],
+    isolation_by_ip: Dict[str, IsolationStatus],
+) -> None:
+    """Stamp each device's recorded IsolationStatus onto that device's
+    retained representative assessment, in place.
+
+    Why isolation is tracked per *device* and only attached at the end,
+    rather than being set on the one assessment that triggered it: an
+    isolation attempt is a device-level runtime event, while a
+    representative is re-selected packet by packet. A later packet from
+    the same device can legitimately displace the triggering assessment
+    (`_is_stronger` breaks a category+score tie on the later
+    `assessed_at` — and repeated identical high-risk packets tie exactly
+    that way), so an outcome attached to a single packet's assessment
+    would be silently dropped the moment that happened. Recording per IP
+    and attaching after EOF makes that loss impossible, regardless of
+    how many packets a device produces or in what order.
+
+    Runs *before* the report-generation loop, so the enforcement result
+    is rendered into the PDF and covered by its signature. Per-run local
+    state only — no registry, no persistence, no database.
+    """
+    for ip, isolation in isolation_by_ip.items():
+        representative = representatives.get(ip)
+        if representative is None:
+            # Defensive only: a device cannot be isolated without having
+            # produced an assessment. Never fabricate a representative.
+            logger.warning(
+                "Isolation was recorded for device %s but no retained assessment "
+                "exists for it; isolation state not attached.",
+                ip,
+            )
+            continue
+        representatives[ip] = representative.with_isolation(isolation)
 
 
 def _resolve_device(raw_packet: RawPacket, devices: Dict[str, Device]) -> Device:

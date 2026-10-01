@@ -27,6 +27,13 @@ the same DeviceAssessment/ReportMetadata fields as before, in the same
 formats existing tests already assert on (e.g. "9 / 10", "0.8700",
 "Verified"/"Failed"). No field was added, removed, or reformatted to
 carry different information.
+
+Page 2 additionally carries the Autonomous Isolation Enforcement block
+(Phase 3B): eligibility, requested, enforced, backend, and a narrative
+that keeps those three facts distinct and never describes a
+non-enforcing backend as physical network isolation. It is read entirely
+off `DeviceAssessment.isolation`; nothing is recomputed here, and
+reports/ still imports no enforcement module.
 """
 from __future__ import annotations
 
@@ -557,6 +564,85 @@ def _draw_page_1_executive_summary(
         y -= 0.18 * inch
 
 
+_NOT_ELIGIBLE_NARRATIVE = (
+    "This device was not eligible for isolation: its raw Quantum Risk Score did not reach "
+    "the isolation threshold, so no isolation was requested and no enforcement action was "
+    "attempted."
+)
+_NOT_ENFORCED_NARRATIVE = (
+    "Isolation requested but not enforced by the current backend. The '{backend}' backend "
+    "does not perform physical network enforcement, so this device was NOT physically "
+    "isolated from the network. Recorded reason: {reason}"
+)
+_FAILED_NARRATIVE = (
+    "Isolation requested, but enforcement FAILED on the '{backend}' backend, so this device "
+    "was NOT isolated from the network. Recorded reason: {reason}"
+)
+_ENFORCED_NARRATIVE = (
+    "Isolation requested and enforced by the '{backend}' backend. Recorded reason: {reason}"
+)
+
+
+def _isolation_narrative(assessment: DeviceAssessment) -> str:
+    """The enforcement prose for page 2, which must keep three distinct
+    facts distinct: eligible, requested, and enforced.
+
+    The hard rule this wording exists to protect: a non-enforcing backend
+    (NoOpIsolationBackend on Windows) must never read as physical network
+    isolation. `enforcement_capable` is what separates "this deployment
+    does not enforce" from "a real backend tried and failed" — both are
+    `enforced=False`, and they must not be described the same way.
+    """
+    isolation = assessment.isolation
+    if isolation is None:
+        return _NOT_ELIGIBLE_NARRATIVE
+    if isolation.enforced:
+        template = _ENFORCED_NARRATIVE
+    elif isolation.enforcement_capable:
+        template = _FAILED_NARRATIVE
+    else:
+        template = _NOT_ENFORCED_NARRATIVE
+    return template.format(backend=isolation.backend, reason=isolation.reason)
+
+
+def _draw_isolation_section(canvas: Canvas, y: float, assessment: DeviceAssessment) -> float:
+    """The Autonomous Isolation Enforcement block on page 2.
+
+    Eligibility is read off the *presence* of isolation state, not
+    recomputed: an IsolationStatus exists if and only if
+    enforcement.decision.should_isolate() returned True for this device,
+    so reports/ needs no threshold of its own and never duplicates the
+    eligibility rule (and never imports enforcement/)."""
+    isolation = assessment.isolation
+
+    y = _draw_section_heading(canvas, y, "Autonomous Isolation Enforcement")
+    y -= 0.04 * inch
+    y = _draw_field(
+        canvas,
+        y,
+        "Isolation Eligible",
+        "No - raw QRS below the isolation threshold"
+        if isolation is None
+        else "Yes - raw QRS reached the isolation threshold",
+    )
+    y = _draw_field(
+        canvas, y, "Isolation Requested", "No" if isolation is None else _yes_no(isolation.requested)
+    )
+    y = _draw_field(
+        canvas, y, "Isolation Enforced", "No" if isolation is None else _yes_no(isolation.enforced)
+    )
+    y = _draw_field(
+        canvas, y, "Enforcement Backend", "None" if isolation is None else isolation.backend
+    )
+    y -= 0.04 * inch
+    y = _draw_card(canvas, y, "Enforcement Status", _isolation_narrative(assessment))
+    return y
+
+
+def _yes_no(value: bool) -> str:
+    return "Yes" if value else "No"
+
+
 def _draw_page_2_technical_findings(
     canvas: Canvas, assessment: DeviceAssessment, metadata: ReportMetadata
 ) -> None:
@@ -587,6 +673,9 @@ def _draw_page_2_technical_findings(
         y = _draw_field(canvas, y, "Status", _anomaly_status_text(assessment))
         y = _draw_field(canvas, y, "Anomaly Score", f"{anomaly.anomaly_score:.4f}")
         y = _draw_field(canvas, y, "Confidence", f"{anomaly.confidence:.4f}")
+    y -= 0.16 * inch
+
+    _draw_isolation_section(canvas, y, assessment)
 
 
 def _draw_page_3_audit_and_verification(

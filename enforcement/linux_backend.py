@@ -98,6 +98,10 @@ class LinuxIsolationBackend(IsolationBackend):
     """
 
     backend_name = LINUX_BACKEND_NAME
+    #: Unlike NoOpIsolationBackend, this backend *is* meant to enforce —
+    #: so an enforced=False outcome from it is a genuine failure, and
+    #: must be displayed as "Failed", not as a non-enforcing deployment.
+    enforcement_capable = True
 
     def __init__(
         self,
@@ -202,4 +206,5 @@ class LinuxIsolationBackend(IsolationBackend):
             enforced=enforced,
             reason=reason,
             backend=self.backend_name,
+            enforcement_capable=self.enforcement_capable,
         )

@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from models.anomaly_assessment import AnomalyAssessment
 from models.device_assessment import DeviceAssessment
+from models.isolation_status import NOT_REQUESTED, IsolationStatus
 from models.report_metadata import ReportMetadata
 
 _SIGNATURE_PREVIEW_LENGTH = 32
@@ -32,6 +33,43 @@ def _serialize_anomaly(anomaly: Optional[AnomalyAssessment]) -> Optional[Dict[st
     }
 
 
+def _serialize_isolation(isolation: Optional[IsolationStatus]) -> Dict[str, Any]:
+    """The `isolation` sub-object, always present so the frontend never
+    has to branch on a missing key.
+
+    `requested=False` with a null backend/reason/timestamp is how "this
+    device was never isolation-eligible" is reported — the absence of an
+    IsolationStatus, not an absent field. `status` is the compact display
+    label, derived once here from the model rather than re-derived by
+    each client; `enforcement_capable` is included so a client can see
+    *why* an attempt did not enforce without parsing prose.
+
+    Note what is NOT here: nothing in this function knows the isolation
+    threshold, the QRS, or any backend name. dashboard/ never imports
+    enforcement/ — it reads an already-decided result, like every other
+    value in this module.
+    """
+    if isolation is None:
+        return {
+            "requested": False,
+            "enforced": False,
+            "backend": None,
+            "reason": None,
+            "requested_at": None,
+            "enforcement_capable": False,
+            "status": NOT_REQUESTED,
+        }
+    return {
+        "requested": isolation.requested,
+        "enforced": isolation.enforced,
+        "backend": isolation.backend,
+        "reason": isolation.reason,
+        "requested_at": isolation.requested_at.isoformat(),
+        "enforcement_capable": isolation.enforcement_capable,
+        "status": isolation.status_label,
+    }
+
+
 def serialize_device_summary(assessment: DeviceAssessment, has_report: bool) -> Dict[str, Any]:
     """The `/api/devices` list-item shape (docs/SDD.md's Phase 12 addendum)."""
     return {
@@ -44,6 +82,7 @@ def serialize_device_summary(assessment: DeviceAssessment, has_report: bool) -> 
         "anomaly": _serialize_anomaly(assessment.anomaly_assessment),
         "assessed_at": assessment.assessed_at.isoformat(),
         "has_report": has_report,
+        "isolation": _serialize_isolation(assessment.isolation),
     }
 
 

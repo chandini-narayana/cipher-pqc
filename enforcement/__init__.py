@@ -8,6 +8,13 @@ hardware-execution boundary: Windows (non-enforcing) only ever uses
 `NoOpIsolationBackend`, which records that isolation was requested
 without claiming it was physically enforced.
 
+`IsolationOutcome.to_status()` projects an enforcement result into
+`models.isolation_status.IsolationStatus`, which pipeline/runner.py
+attaches to the retained DeviceAssessment per device — that is how
+isolation state reaches the REST API, the dashboard and the signed PDF
+(see docs/SDD.md's Phase 3B addendum). enforcement/ depends on models/;
+models/ never imports enforcement/.
+
 `LinuxIsolationBackend` (linux_backend.py) is the location real
 Raspberry-Pi enforcement will live. It is fully wired against the same
 contract but constructs no firewall command of its own: both the rule

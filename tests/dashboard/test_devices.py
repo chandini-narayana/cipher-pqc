@@ -13,6 +13,10 @@ _SUMMARY_KEYS = {
     "anomaly",
     "assessed_at",
     "has_report",
+    # Phase 3B: additive isolation state. The assertions below stay
+    # exact — this set records the deliberately-extended contract, it
+    # does not relax the check.
+    "isolation",
 }
 
 

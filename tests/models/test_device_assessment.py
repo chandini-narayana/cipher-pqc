@@ -5,6 +5,7 @@ from models.anomaly_assessment import AnomalyAssessment
 from models.device import Device
 from models.device_assessment import DeviceAssessment
 from models.enums import RiskCategory
+from models.isolation_status import IsolationStatus
 from models.risk_assessment import RiskAssessment
 
 TS = datetime(2026, 1, 1, 12, 0, 0)
@@ -69,3 +70,60 @@ def test_round_trip_serialization_with_none_anomaly_assessment() -> None:
     a2 = DeviceAssessment.from_dict(a1.to_dict())
     assert a1 == a2
     assert a2.anomaly_assessment is None
+
+# --- Phase 3B: optional isolation state ---
+
+
+def _isolation() -> IsolationStatus:
+    return IsolationStatus(
+        requested=True,
+        enforced=False,
+        backend="noop",
+        reason="Hardware enforcement unavailable in current deployment",
+        requested_at=TS,
+        enforcement_capable=False,
+    )
+
+
+def test_isolation_defaults_to_none() -> None:
+    """Optional and absent by default: most observations are not
+    isolation-eligible, and every pre-Phase-3B construction site must
+    keep working untouched."""
+    assert _build().isolation is None
+
+
+def test_to_dict_serializes_absent_isolation_as_none() -> None:
+    assert _build().to_dict()["isolation"] is None
+
+
+def test_with_isolation_returns_a_copy_carrying_the_status() -> None:
+    original = _build()
+    updated = original.with_isolation(_isolation())
+    assert updated.isolation == _isolation()
+    assert original.isolation is None
+
+
+def test_with_isolation_changes_nothing_else() -> None:
+    """Enforcement state must never alter a risk, ML or fusion value."""
+    original = _build()
+    updated = original.with_isolation(_isolation())
+    assert updated.device == original.device
+    assert updated.risk_assessment == original.risk_assessment
+    assert updated.anomaly_assessment == original.anomaly_assessment
+    assert updated.final_category == original.final_category
+    assert updated.assessed_at == original.assessed_at
+
+
+def test_round_trip_serialization_with_isolation() -> None:
+    a1 = _build().with_isolation(_isolation())
+    a2 = DeviceAssessment.from_dict(a1.to_dict())
+    assert a1 == a2
+    assert a2.isolation == _isolation()
+
+
+def test_from_dict_tolerates_a_payload_without_an_isolation_key() -> None:
+    """Backward compatibility: a payload serialized before isolation
+    state existed must still load, as None."""
+    payload = _build().to_dict()
+    del payload["isolation"]
+    assert DeviceAssessment.from_dict(payload).isolation is None

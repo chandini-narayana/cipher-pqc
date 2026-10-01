@@ -17,6 +17,7 @@ from models.device_assessment import DeviceAssessment
 from models.device_features import DeviceFeatures
 from models.entropy_metrics import EntropyMetrics
 from models.enums import ProtocolType, RiskCategory, TLSVersion
+from models.isolation_status import IsolationStatus
 from models.packet_metadata import PacketMetadata
 from models.protocol_fingerprint import ProtocolFingerprint
 from models.report_metadata import ReportMetadata
@@ -35,6 +36,7 @@ __all__ = [
     "RiskAssessment",
     "AnomalyAssessment",
     "DeviceAssessment",
+    "IsolationStatus",
     "SignedEvent",
     "ReportMetadata",
 ]
