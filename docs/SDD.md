@@ -1165,6 +1165,32 @@ Platform recorded with the results: Windows 11 (10.0.26200), AMD64, 64-bit, Inte
 
 ---
 
+## 35. Phase 3A Addendum — Isolation Backend Contract (pre-enforcement)
+
+**Purpose: settle the contract, not the firewall policy.** Phase 3A hardens the existing isolation abstraction so a real Linux backend can be added on the Raspberry Pi later *without touching the CIPHER pipeline*. Nothing about detection, scoring, fusion, reporting or the REST contract changed, and no firewall command exists anywhere in the codebase.
+
+**Unchanged and re-asserted by test.** `enforcement.decision.should_isolate()` still compares the raw, deterministic `risk_assessment.risk_score` against `settings.risk_isolation_threshold` (default 7) and still never reads `final_category` — an Isolation-Forest/fusion escalation alone can never cause isolation (Section 27). `pipeline/runner.py` is unmodified: same per-packet enforcement timing, same one-attempt-per-device-per-run set, same fault isolation. Composition roots (`main.py`, `run_api.py`, `run_demo.py`, `run_live_demo.py`) are unmodified and still construct `NoOpIsolationBackend()` explicitly; backend selection remains a composition-root decision, never platform-sniffing inside `enforcement/` or `pipeline/`.
+
+**`IsolationOutcome` gained one field: `backend: str`** (default `"unknown"`, declared last so every existing positional construction keeps working — asserted by test). This completes the result contract the Pi work needs: `requested`, `enforced`, `backend`, `reason`. Without `backend`, an audit log cannot distinguish a deployment that deliberately does not enforce (Windows, `backend="noop"`) from a real enforcing deployment whose attempt failed (`backend="linux"`, `enforced=False`). `IsolationOutcome` is still ephemeral, still lives in `enforcement/` and not `models/`, and is still absent from the PDF and REST contracts — a test now statically asserts that no module under `models/`, `reports/` or `dashboard/` imports `enforcement` at all.
+
+**`IsolationBackend.restore(device_ip)` was added as a concrete, non-abstract default**, not an abstract method. `isolate()` remains the only abstract member, so every existing backend and test double stays instantiable unchanged. The default implementation enforces nothing and says so (`requested=True`, `enforced=False`, reason naming restoration as unsupported). This places the *seam* for un-isolation on the interface — so a future backend can override it without any caller changing shape — while still refusing to invent restoration policy. Nothing in CIPHER calls `restore()`.
+
+**`enforcement/command_runner.py` — the injectable execution seam.** `CommandRunner.run(argv) -> CommandResult`, where `CommandResult` carries `command`, `executed`, `exit_code`, `stdout`, `stderr` and a `succeeded` property that is true only when the command *actually ran* and exited 0 — "exit code 0 from a process that never started" must never read as success, the same honesty rule `enforced` exists for. The only implementation in this phase, `UnavailableCommandRunner`, never spawns a process and returns `executed=False` with an explanatory reason. `run()` never raises for an ordinary failure (missing binary, non-zero exit, insufficient privilege).
+
+**`enforcement/linux_backend.py` — the location, wired but inert.** `LinuxIsolationBackend` is a full `IsolationBackend` whose two policy-bearing parts are both injected: a `RuleBuilder` (`Callable[[str], Sequence[Sequence[str]]]` — what to run, one argv per command so a two-rule policy needs no interface change) and a `CommandRunner` (how to run it). Both defaults are deliberately non-functional: the default rule builder, `unfrozen_rule_builder`, raises `IsolationPolicyNotFrozenError`, and the default runner is `UnavailableCommandRunner`. Constructing the backend with no arguments, on any platform, therefore yields `requested=True, enforced=False` with a reason naming the unfrozen policy — it cannot reach a firewall.
+
+`isolate()` never raises. A raising rule builder, an empty command list, a raising runner, and a command that ran but exited non-zero are all reported identically and honestly: `enforced=False` plus a `reason`. `enforced=True` is claimed only when *every* constructed command actually executed and succeeded.
+
+It lives in its own module rather than in `backends.py` for two reasons: `backends.py` is statically asserted to contain `NoOpIsolationBackend` as its only concrete backend and to import neither `subprocess` nor `os`, and a Windows deployment never needs to import the Linux module at all. All three `enforcement/` modules are statically asserted to import neither `subprocess` nor `os`, and `linux_backend.py` is additionally asserted to contain **no argv string-list literal of any kind** — a machine-checked guarantee that no firewall command is embedded there, not even a placeholder.
+
+**Deliberately still unfrozen, to be decided on the Pi once the controlled enforcement topology is fixed:** which interface the rule applies to (wlan0 is management, wlan1 is the monitor-mode AR9271, neither is a forwarding path), IP vs. MAC enforcement, `FORWARD` vs. `INPUT`/`OUTPUT`, nftables vs. iptables, the gateway/NAT topology the Pi would have to own to enforce at all, `DROP` vs. `REJECT`, duplicate-rule and restoration semantics, and the privilege model. Those arrive later as one `RuleBuilder` plus one executing `CommandRunner` — not as edits to CIPHER's pipeline.
+
+**Also not implemented, deliberately:** deauthentication, Wi-Fi credential handling, WPA/WPA2/WPA3 decryption, any institutional firewall change, isolation status in the PDF or REST contract, and any new configuration setting for backend selection.
+
+**Test count: 1228 → 1278** (+50 collected cases from 46 test functions: 8 command-runner, 20 Linux-backend, 18 end-to-end backend-contract). **All 1278 pass.** No existing test was weakened, changed or removed. Windows remains non-enforcing, and the contract suite additionally forbids process spawning (`subprocess.Popen/run/call/check_call/check_output`, `os.system/popen/execv/spawnv`) for the duration of a full high-risk pipeline run.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

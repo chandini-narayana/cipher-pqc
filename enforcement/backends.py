@@ -18,6 +18,12 @@ isolation was *requested* and logs why enforcement did not happen.
 This keeps "isolation decided" and "isolation enforced" as two
 distinct, honestly-reported facts, never conflated.
 
+The Linux backend now has a home — `enforcement.linux_backend.
+LinuxIsolationBackend` — but still constructs no firewall command: its
+rule builder and command runner are injected, and both defaults refuse
+to act. It lives in that separate module, not here, so that this module
+provably stays the NoOp-only, subprocess-free one.
+
 A future Raspberry Pi backend is swapped in at the composition root
 (main.py / run_api.py), exactly like `capture.factory.get_capture_source`
 already swaps `OfflinePcapSource`/`LiveCaptureSource` — never via
@@ -32,6 +38,11 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+_UNKNOWN_BACKEND = "unknown"
+NOOP_BACKEND_NAME = "noop"
+
+_RESTORE_UNSUPPORTED_REASON = "Restoration is not supported by this backend"
+
 
 @dataclass(frozen=True, slots=True)
 class IsolationOutcome:
@@ -43,6 +54,11 @@ class IsolationOutcome:
     `requested` is always True when a backend's isolate() returns
     normally (an attempt was genuinely made); `enforced` distinguishes
     whether that attempt actually changed anything on the network.
+    `backend` names which concrete backend produced this outcome (e.g.
+    "noop", "linux"), so an audit log can tell a deliberately
+    non-enforcing deployment apart from a real one that failed; it
+    defaults to "unknown" only so that existing positional
+    constructions keep working unchanged.
     """
 
     device_ip: str
@@ -51,15 +67,25 @@ class IsolationOutcome:
     requested: bool
     enforced: bool
     reason: str
+    backend: str = _UNKNOWN_BACKEND
 
 
 class IsolationBackend(ABC):
     """Abstract hardware-execution boundary for isolating a device.
 
-    No `restore()` in this phase: nothing here calls it, and restoration
-    semantics are exactly the kind of undefined-by-the-Execution-Report
-    firewall policy (see module docstring) this phase must not invent.
+    `isolate()` is the only abstract method, so every existing backend
+    (and every test double) remains instantiable unchanged. `restore()`
+    is a concrete, deliberately non-enforcing default: the restoration
+    *policy* (which rule to remove, in which chain, whether a device
+    may ever be un-isolated automatically at all) is exactly the kind
+    of undefined-by-the-Execution-Report firewall policy this phase
+    must not invent — but the *seam* for it belongs on the interface so
+    a future Linux backend can override it without the pipeline or any
+    caller changing shape. Nothing in CIPHER calls `restore()` today.
     """
+
+    #: Name recorded in IsolationOutcome.backend. Overridden per backend.
+    backend_name: str = _UNKNOWN_BACKEND
 
     @abstractmethod
     def isolate(self, device_ip: str, risk_score: int) -> IsolationOutcome:
@@ -68,6 +94,30 @@ class IsolationBackend(ABC):
         this platform" outcome — return an IsolationOutcome with
         `enforced=False` and an explanatory `reason` instead."""
         raise NotImplementedError  # pragma: no cover - interface only
+
+    def restore(self, device_ip: str) -> IsolationOutcome:
+        """Attempt to reverse a previous isolation of `device_ip`.
+
+        The default implementation enforces nothing and reports exactly
+        that — `requested=True`, `enforced=False`, with a `reason`
+        naming restoration as unsupported. Like `isolate()`, it must
+        never raise for an ordinary unsupported/failed outcome.
+        """
+        logger.warning(
+            "Restore requested for device %s but backend %s does not implement "
+            "restoration — no network action taken.",
+            device_ip,
+            self.backend_name,
+        )
+        return IsolationOutcome(
+            device_ip=device_ip,
+            risk_score=0,
+            requested_at=datetime.now(timezone.utc),
+            requested=True,
+            enforced=False,
+            reason=_RESTORE_UNSUPPORTED_REASON,
+            backend=self.backend_name,
+        )
 
 
 class NoOpIsolationBackend(IsolationBackend):
@@ -81,6 +131,8 @@ class NoOpIsolationBackend(IsolationBackend):
     """
 
     _REASON = "Hardware enforcement unavailable in current deployment"
+
+    backend_name = NOOP_BACKEND_NAME
 
     def isolate(self, device_ip: str, risk_score: int) -> IsolationOutcome:
         logger.warning(
@@ -97,4 +149,5 @@ class NoOpIsolationBackend(IsolationBackend):
             requested=True,
             enforced=False,
             reason=self._REASON,
+            backend=self.backend_name,
         )
