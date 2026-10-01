@@ -1221,6 +1221,36 @@ It lives in its own module rather than in `backends.py` for two reasons: `backen
 
 ---
 
+## 37. Phase 3C Addendum — Linux/Raspberry-Pi Live Network Capture (capture only)
+
+**Purpose.** Feed IP-visible packets from one named Linux/Pi interface into the existing pipeline while preserving each packet's true source device identity. Capture only: no iptables/nftables rule, no routing, no NAT, no AP mode, no GPIO/OLED, and no change to enforcement policy. `CaptureSource -> RawPacket -> fingerprinting -> QRS -> Isolation Forest -> fusion -> isolation decision` is untouched; `pipeline/runner.py` was not modified in this phase.
+
+**Why a new capture source was required.** `capture.host_live_source.LiveCaptureSource` cannot serve this role, for three independent reasons found in the audit, each fatal on its own:
+
+1. **It normalizes device identity to the local host.** `_to_raw_packet(pkt, local_ip)` sets `RawPacket.src_ip = local_ip` for every packet, swapping ports on inbound traffic so the local machine is always the source. That is correct for its topology — one monitored endpoint — and catastrophic for a Pi, because `pipeline/runner.py` keys a device on `src_ip` and a later Linux backend would isolate that address. Every monitored device would assess, and later be enforced, as the Pi.
+2. **It discards exactly the traffic a Pi must see.** Any packet where neither end is `local_ip` returns `None`. On a monitored path, that is *all* of it — a Pi would observe zero packets.
+3. **It cannot even construct on a Pi.** `check_capture_backend_available()` requires `conf.use_pcap`, which is typically false on Linux (scapy uses native sockets there), and `__init__` rejects any interface with no IPv4 address — which a monitor-mode `wlan1` does not have.
+
+Generalizing it would mean one class whose device-identity semantics flip on a constructor flag, leaving the Windows demo one wrong default away from attributing traffic to the wrong host. Two small classes behind the same `CaptureSource` interface is the safer shape, and nothing downstream can distinguish them.
+
+**`capture/network_live_source.py` — `NetworkLiveCaptureSource`.** Same `CaptureSource.read_packets() -> Iterator[RawPacket]` contract and the same `RawPacket` contract as `OfflinePcapSource`. **Identity is passed through verbatim**: `src_ip` is the packet's own IP source, `dst_ip` its own destination, ports in their captured order, payload bytes unmodified. No address is rewritten, swapped, or normalized; traffic between two third-party hosts is reported, not dropped. A test asserts the two live sources deliberately disagree about the same frame — each correct for its own topology.
+
+Bounded and streaming, reusing the proven `host_live_source` shape: a background sniff thread bridged through a `Queue`, stopping at `timeout` seconds or `packet_limit` packets. The interface is always supplied by the caller; a static test asserts no `wlan0`/`wlan1`/`eth0` literal appears in any executable string in the module, so reusable capture code cannot touch a management interface.
+
+**Filtering and error behavior.** A *frame* is never fatal; a *backend* failure always is. Frames with no IP layer (ARP, 802.11 management/control, protected frames exposing no decodable IP, IPv6) are counted as `skipped_non_ip`; IP frames with no TCP/UDP layer or an empty payload (a bare SYN) are `skipped_no_transport` — the same rule `OfflinePcapSource` already applies; frames whose fields `RawPacket` rejects, or that raise anything at all during conversion, are counted as `parse_failures` and skipped with the loop continuing. A Radiotap/802.11 frame is processed only when it already exposes a decodable IP layer: **no WPA/WPA2/WPA3 decryption, no deauthentication, no credential capture** is attempted or possible. By contrast a nonexistent interface, a permission error, or any other sniff failure is raised as a `CaptureError` naming the interface and the privilege requirement (root or `CAP_NET_RAW`).
+
+**Counters, not telemetry.** `CaptureCounters` (`seen`, `yielded`, `skipped_non_ip`, `skipped_no_transport`, `parse_failures`, plus a `summary()` string) extends the existing single-public-counter precedent (`host_live_source.LiveCaptureSource.packets_captured`) to five ints on the source. No subsystem, no persistence, no registry, no database.
+
+**`run_pi_live.py` — a fifth composition root.** `run_live_demo.py` is explicitly and documentedly host-level Windows capture with local-host identity normalization, so it was not repurposed; overloading it would put two contradictory identity semantics behind one flag. The new script captures from one named interface, runs the unmodified pipeline, and prints capture counters plus a per-device table with each device's isolation status. `--interface` has **no default** (also accepted as `PI_CAPTURE_INTERFACE`); a missing interface is exit code 2, never a guess. `--list-interfaces`, `--timeout`, `--packet-limit` and an optional pass-through `--filter` complete the CLI. It composes `NoOpIsolationBackend()` exactly like every other entry point — enforcement policy is unchanged, and a test asserts the module neither imports `LinuxIsolationBackend` nor mentions iptables/nftables.
+
+**The frozen factory was not touched.** `capture/factory.py` still resolves `CAPTURE_MODE=live` to the `capture.live_source.LiveCaptureSource` scaffold, so `main.py`, `run_api.py` and `run_demo.py` behave exactly as before; a test asserts this. The Pi source is composed only by its own entry point, the same pattern `run_live_demo.py` already uses.
+
+**Test count: 1346 → 1420** (+74: 40 capture-source unit tests, 14 pipeline-integration and existing-path regression tests, 20 entry-point tests). **All 1420 pass.** No existing test was weakened or modified. Every new test uses deterministic scapy-built packets with `sniff()` stubbed — none requires a real interface, a capture backend, root, or network access. The integration tests deliberately do *not* stub `assess_packet`: they run the genuine pipeline, so an identity that failed to survive it would fail the test. The slowest tests in the suite remain pre-existing ones (fixture generation, startup smoke, performance benchmarks); nothing added here is slow.
+
+**Not implemented (deliberately):** iptables/nftables rules, routing, NAT, AP mode, MAC blocking, deauthentication, WPA/WPA2/WPA3 decryption, credential capture, GPIO/LED/OLED, any change to QRS weights/thresholds, the isolation threshold, Isolation Forest, the fusion rule, the model artifacts, or `pipeline/runner.py`.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.
