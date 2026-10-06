@@ -10,5 +10,12 @@ for the frozen REST contract.
 
 from dashboard.app import create_app
 from dashboard.state import ApplicationState, build_application_state
+from dashboard.state_store import ApplicationStateStore, resolve_state_store
 
-__all__ = ["create_app", "ApplicationState", "build_application_state"]
+__all__ = [
+    "create_app",
+    "ApplicationState",
+    "build_application_state",
+    "ApplicationStateStore",
+    "resolve_state_store",
+]

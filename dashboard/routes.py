@@ -27,7 +27,14 @@ bp = Blueprint("api", __name__, url_prefix="/api")
 
 
 def _state() -> ApplicationState:
-    return current_app.config["CIPHER_STATE"]
+    """The snapshot this request serves.
+
+    Read once per request from the store, so a long-running appliance that
+    republishes between requests is picked up without any route change.
+    The returned snapshot is never mutated, so the rest of the request can
+    use it freely without holding a lock.
+    """
+    return current_app.config["CIPHER_STATE_STORE"].get()
 
 
 def _error(status_code: int, error: str, message: str) -> Tuple[Response, int]:

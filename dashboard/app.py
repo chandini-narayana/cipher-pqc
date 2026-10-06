@@ -6,6 +6,13 @@ Flask app factory. Wires the already-implemented REST routes
 imports capture/, fingerprint/, risk/, ml/, fusion/, or signing/
 internals.
 
+`state` may be an ApplicationState (every pre-appliance caller: main.py,
+run_api.py, run_demo.py, the tests) or an ApplicationStateStore (appliance
+mode, which republishes a new snapshot after each capture cycle). Both are
+normalised to a store, so the routes have one way to read state and the
+REST contract is identical either way — a plain ApplicationState simply
+becomes a store nobody ever publishes to again.
+
 CORS: if `settings.cors_origin` is configured, every response carries
 `Access-Control-Allow-Origin` set to exactly that configured origin —
 never a wildcard, and never guessed at. If unconfigured, no
@@ -14,17 +21,22 @@ is a small `after_request` hook (see docs/SDD.md's Phase 12 addendum).
 """
 from __future__ import annotations
 
+from typing import Union
+
 from flask import Flask, Response, jsonify
 
 from config.settings import Settings
 from dashboard.routes import bp
 from dashboard.state import ApplicationState
+from dashboard.state_store import ApplicationStateStore, resolve_state_store
 
 
-def create_app(state: ApplicationState, settings: Settings) -> Flask:
+def create_app(
+    state: Union[ApplicationState, ApplicationStateStore], settings: Settings
+) -> Flask:
     """Build the Flask app serving `state` over the frozen REST contract."""
     app = Flask(__name__)
-    app.config["CIPHER_STATE"] = state
+    app.config["CIPHER_STATE_STORE"] = resolve_state_store(state)
     app.config["CIPHER_SETTINGS"] = settings
 
     app.register_blueprint(bp)

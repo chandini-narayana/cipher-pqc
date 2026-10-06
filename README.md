@@ -400,6 +400,9 @@ cipher/
 ├── run_demo.py              # Integrated dashboard + API (presentation entry point)
 ├── run_api.py               # API-only development server
 ├── run_live_demo.py         # Host-level live capture demo (CLI)
+├── run_pi_live.py           # Raspberry Pi bounded live capture diagnostic (CLI)
+├── run_appliance.py         # Appliance mode: continuous capture + live dashboard
+├── appliance/               # Appliance capture-cycle worker
 ├── preflight.py             # Pre-start environment check
 ├── launch_cipher.py         # Launcher used by Start CIPHER.bat
 ├── evaluate_demo.py         # Five-scenario controlled evaluation harness
@@ -502,6 +505,35 @@ command-line flags; they are configured by environment variables read in
 | `python main.py` | One offline capture pass, then exits. No server. |
 | `python run_api.py` | API-only development server, no web UI. |
 | `Start CIPHER.bat` | Windows launcher: selects a project virtual environment, runs preflight, starts `run_demo.py`, waits for a real `HTTP 200` from `/api/health`, then opens the browser. |
+| `python run_pi_live.py --interface <name>` | One bounded live capture pass on Linux/Pi, prints a per-device table, exits. No server. |
+| `python run_appliance.py --interface <name>` | **Appliance mode**: continuous live capture with the dashboard and REST API available while it runs. See below. |
+
+**Appliance mode — continuous capture with a live dashboard.**
+
+```bash
+python run_appliance.py --interface eth0
+python run_appliance.py --interface eth0 --enforcement iptables     --display oled --leds gpio --led-pins 17,27,22
+```
+
+One process, two threads: Flask serves the compiled dashboard and `/api/*`
+while one worker runs **bounded capture cycles** (5 s by default, 1 s minimum)
+through the same unmodified `run_capture()` pipeline. The dashboard polls the
+existing REST endpoints every 2 seconds, so new assessments, isolation
+outcomes and reports appear without a reload.
+
+Cycles exist because `run_capture()` attaches isolation state and generates
+reports at end of capture; an unbounded capture would produce neither.
+**Physical isolation is not affected by the cycle**: it remains immediate and
+per-packet inside the pipeline, as do the OLED and LED updates. The cycle
+boundary governs only when the dashboard's snapshot is replaced.
+
+Safe defaults are unchanged — `noop` enforcement, no OLED, no LEDs unless each
+is explicitly selected, and the Linux guards remain. `--interface` has no
+default. **Each cycle regenerates a report for any device that is still
+flagged**, so historical signed PDFs accumulate in `data/reports/` during a
+long run; the API serves the latest per device. No retention policy is applied
+— that is a deliberate open decision, not an oversight. Raspberry Pi
+boot/systemd installation is not part of this entry point.
 
 **Host-level live capture.**
 
