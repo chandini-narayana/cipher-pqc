@@ -527,6 +527,43 @@ reports at end of capture; an unbounded capture would produce neither.
 per-packet inside the pipeline, as do the OLED and LED updates. The cycle
 boundary governs only when the dashboard's snapshot is replaced.
 
+**Protected-device attribution (opt-in).** On a gateway topology the Pi sees
+both directions of a client's traffic, so the historic "device = source
+address" rule makes every remote Internet peer a CIPHER device: one client
+browsing produces dozens of entries, and a peer reaching raw QRS >= 7 would
+become the isolation target. Passing `--protected-subnet 192.168.50.0/24`
+(comma-separated for several networks, or `CIPHER_PROTECTED_SUBNETS`) attributes
+each packet to its **protected endpoint** instead:
+
+| src protected | dst protected | assessed device |
+|---|---|---|
+| yes | no | the source (outbound) |
+| no | yes | **the destination** (inbound) |
+| yes | yes | the source |
+| no | no | none — packet skipped |
+
+The appliance's own address is excluded, so the Pi never becomes a protected
+device merely because `192.168.50.1` belongs to the protected `/24`.
+
+**Packets are never modified and nothing is discarded at capture.** The BPF
+filter and the capture layer are untouched, so inbound ServerHello/Certificate
+evidence — which only ever travels server-to-client — is still parsed; it is
+simply attributed to the client it concerns rather than to the server. Two
+consequences worth knowing: **inbound peer evidence can raise the protected
+client's risk score** (a weak server certificate counts against the client
+participating in that session), and **representative selection still keeps only
+the strongest packet rather than merging evidence across packets**, so a report
+shows the single highest-scoring finding rather than a combined picture.
+
+Because identity is the only thing that changes, and because enforcement,
+reports, dashboard state and the OLED/LED observer all already key on the
+assessed device, correct attribution propagates everywhere with no filtering
+added to those layers. **Raw deterministic QRS >= 7 remains the only physical
+isolation trigger.** This is opt-in: with no subnet configured, identity is the
+source address exactly as before, so offline runs, `run_demo.py`,
+`run_pi_live.py` and the research evaluation are unaffected. An invalid CIDR
+exits before capture starts, and no subnet is hardcoded. See docs/SDD.md §42.
+
 Safe defaults are unchanged — `noop` enforcement, no OLED, no LEDs unless each
 is explicitly selected, and the Linux guards remain. `--interface` has no
 default. **Each cycle regenerates a report for any device that is still

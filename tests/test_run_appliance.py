@@ -666,3 +666,123 @@ def test_the_appliance_does_not_change_run_pi_live_behaviour(stubbed) -> None:
     assert isinstance(run_pi_live._build_isolation_backend("noop"), NoOpIsolationBackend)
     assert isinstance(run_pi_live._build_status_display("none"), NoOpStatusDisplay)
     assert isinstance(run_pi_live._build_status_indicator("none", None), NoOpStatusIndicator)
+
+
+# --- protected-device attribution (opt-in) --------------------------------
+
+
+def test_no_protected_subnet_means_no_resolver(stubbed) -> None:
+    """The opt-in default: run_capture keeps its historic src_ip identity."""
+    run_appliance.main(["--interface", "eth0"])
+    assert _worker().kwargs["capture_kwargs"]["device_resolver"] is None
+
+
+def test_a_protected_subnet_installs_a_resolver(stubbed) -> None:
+    run_appliance.main(["--interface", "eth0", "--protected-subnet", "192.168.50.0/24"])
+
+    resolver = _worker().kwargs["capture_kwargs"]["device_resolver"]
+    assert resolver is not None
+    assert resolver("93.184.216.34", "192.168.50.24") == "192.168.50.24"
+    assert resolver("192.168.50.24", "93.184.216.34") == "192.168.50.24"
+    assert resolver("93.184.216.34", "8.8.8.8") is None
+
+
+def test_several_protected_subnets_are_accepted(stubbed) -> None:
+    run_appliance.main(
+        ["--interface", "eth0", "--protected-subnet", "192.168.50.0/24,10.10.0.0/16"]
+    )
+
+    resolver = _worker().kwargs["capture_kwargs"]["device_resolver"]
+    assert resolver("93.184.216.34", "10.10.4.5") == "10.10.4.5"
+
+
+def test_the_protected_subnet_may_come_from_the_environment(stubbed, monkeypatch) -> None:
+    monkeypatch.setenv("CIPHER_PROTECTED_SUBNETS", "192.168.50.0/24")
+
+    run_appliance.main(["--interface", "eth0"])
+
+    assert _worker().kwargs["capture_kwargs"]["device_resolver"] is not None
+
+
+def test_an_explicit_subnet_flag_beats_the_environment(stubbed, monkeypatch) -> None:
+    monkeypatch.setenv("CIPHER_PROTECTED_SUBNETS", "10.10.0.0/16")
+
+    run_appliance.main(["--interface", "eth0", "--protected-subnet", "192.168.50.0/24"])
+
+    resolver = _worker().kwargs["capture_kwargs"]["device_resolver"]
+    assert resolver("93.184.216.34", "192.168.50.24") == "192.168.50.24"
+    assert resolver("93.184.216.34", "10.10.4.5") is None
+
+
+@pytest.mark.parametrize("value", ["nonsense", "192.168.50.0/33", "2001:db8::/32"])
+def test_an_invalid_protected_subnet_exits_before_capture(stubbed, capsys, value) -> None:
+    exit_code = run_appliance.main(["--interface", "eth0", "--protected-subnet", value])
+
+    assert exit_code == 2
+    assert "Invalid protected subnet" in capsys.readouterr().err
+    assert _FakeWorker.instances == []
+
+
+def test_the_appliances_own_address_is_excluded_from_the_scope(monkeypatch) -> None:
+    """The Pi's address is inside the protected /24, so a plain membership test
+    would make the appliance a protected device of itself."""
+    monkeypatch.setattr(
+        run_appliance, "local_ipv4_addresses", lambda: {"192.168.50.1"}
+    )
+
+    scope = run_appliance._build_protected_scope("192.168.50.0/24")
+
+    assert scope.is_protected("192.168.50.1") is False
+    assert scope.is_protected("192.168.50.24") is True
+    assert scope.resolve("192.168.50.1", "93.184.216.34") is None
+
+
+def test_self_discovery_failing_does_not_break_the_scope(monkeypatch) -> None:
+    """Discovery is best-effort; an empty result means one fewer exclusion."""
+    monkeypatch.setattr(run_appliance, "local_ipv4_addresses", lambda: set())
+
+    scope = run_appliance._build_protected_scope("192.168.50.0/24")
+
+    assert scope.is_protected("192.168.50.24") is True
+
+
+def test_no_subnet_builds_no_scope() -> None:
+    assert run_appliance._build_protected_scope(None) is None
+    assert run_appliance._build_protected_scope("") is None
+
+
+def test_the_banner_states_the_protected_scope(stubbed, capsys) -> None:
+    run_appliance.main(["--interface", "eth0", "--protected-subnet", "192.168.50.0/24"])
+    assert "192.168.50.0/24" in capsys.readouterr().out
+
+
+def test_the_banner_states_when_no_scope_is_configured(stubbed, capsys) -> None:
+    run_appliance.main(["--interface", "eth0"])
+    assert "source-address identity" in capsys.readouterr().out
+
+
+def test_no_subnet_is_hardcoded_in_application_logic() -> None:
+    """The protected network is a deployment fact, like the interface name and
+    the GPIO pins. It must appear only in help text and docstrings."""
+    import ast
+    import inspect
+
+    import pipeline.device_resolution as resolution
+
+    for module in (run_appliance, resolution):
+        tree = ast.parse(inspect.getsource(module))
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)):
+                doc = ast.get_docstring(node, clean=False)
+                if doc:
+                    docstrings.add(doc)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value in docstrings:
+                    continue
+                if "192.168.50" in node.value:
+                    # Allowed only as an illustrative example in help text,
+                    # never as a value the code would actually use.
+                    lowered = node.value.lower()
+                    assert "e.g." in lowered or "example" in lowered, node.value

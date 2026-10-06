@@ -1419,6 +1419,48 @@ One small supporting change: `ApiError` moved from `client.ts` to a new, depende
 
 ---
 
+## 42. Phase A2 Addendum — Protected-Device Attribution (opt-in)
+
+**The problem.** CIPHER's device identity has always been `RawPacket.src_ip` (`pipeline.runner._resolve_device`), which is correct for an offline capture or a passive tap: each distinct source genuinely is a different device. On a Raspberry Pi acting as the **gateway** for a protected subnet it is correct in only one direction, because traffic there is bidirectional:
+
+```
+192.168.50.24 -> 93.184.216.34     src is the protected client   (correct)
+93.184.216.34 -> 192.168.50.24     src is a remote server        (wrong)
+```
+
+Field evidence: one connected client produced **26 accumulated "devices"**, each with a real score. Worse than cosmetic — a peer that reached raw QRS >= 7 would have become the **isolation target**.
+
+**The fix is a labelling decision, and only that.** `pipeline/device_resolution.py`'s `ProtectedScope.resolve(src, dst)` answers "which address in this packet is the protected device?", and `run_capture` uses that answer as the identity. The frozen rule:
+
+| src protected | dst protected | device |
+|---|---|---|
+| yes | no | `src` (outbound — unchanged from historic behaviour) |
+| no | yes | **`dst`** (inbound — the fix) |
+| yes | yes | `src` (lab-to-lab: the sender is the actor; one deterministic answer per packet) |
+| no | no | none — the packet concerns no protected device and is skipped |
+
+The appliance's own addresses are excluded first, because on the intended topology the Pi's address (192.168.50.1) is *inside* the protected /24 and a plain membership test would make the appliance a protected device of itself.
+
+**Why this needed no change to any frozen component.** Three properties of the existing code, each verified rather than assumed:
+
+  * **Scoring never consults an address or a port.** `fingerprint_packet()` takes only a payload — by its own docstring it "does not even accept a port as an argument, which structurally guarantees port independence" — and `port_risk_for_protocol()` keys off the detected protocol. `risk/`, `entropy/`, `fusion/` and `ml/` contain **zero** references to `src_ip`, `dst_ip`, `src_port` or `dst_port`. So re-attributing a packet cannot change a single score; it changes only whose score it is. A test asserts the same certificate bytes produce an identical `RiskAssessment` in either direction.
+  * **`src_ip` became an identity in exactly one place** — `_resolve_device`, which now receives an already-decided identity instead of deciding policy itself.
+  * **Enforcement, reports, representative selection and state already key on `Device.ip`**, never a packet endpoint (`ip = assessment.device.ip` at the enforcement call; `generate_report_id(assessment.device.ip, ...)`; `_update_representative(representatives, device.ip, ...)`). Correct attribution therefore propagates to the firewall, the PDF, the dashboard and the OLED/LEDs **without any of those layers changing** — no second presentation filter was added, and none proved necessary.
+
+**Full bidirectional capture is preserved.** The BPF filter, `NetworkLiveCaptureSource` and `RawPacket` are untouched; a test asserts the packet's addresses, ports and payload are unmodified after a run. The inbound ServerHello/Certificate evidence that only ever travels server-to-client is retained and simply filed under the client it concerns — a test builds a real 1024-bit RSA certificate record, confirms the project's own parser extracts `key_size == 1024` from it, and asserts the resulting key-size remediation appears on the **client's** assessment.
+
+**Two semantic consequences, stated plainly.** First, **inbound peer evidence may contribute to the protected client's risk score**: a client's QRS can rise because a remote server presented a weak certificate. That is defensible for a device-protection tool — the client is participating in a weak session — but the score becomes a property of its sessions, not solely of its own emissions. Second, **representative assessment still keeps only the strongest packet rather than merging evidence across packets** (the frozen rule in Section 24). If an outbound ClientHello scores 5 and an inbound Certificate scores 7, the representative is the 7 and the TLS-version finding is discarded, not combined. That is pre-existing behaviour, not introduced here, but attribution makes it more visible because far more evidence now competes for one slot per device.
+
+**Raw deterministic QRS >= 7 remains the sole physical-isolation trigger.** `should_isolate()` is untouched and still never reads `final_category`. Tests assert that an inbound QRS >= 7 isolates the **protected client's** IP, that a remote server is never passed to `isolate()` in scoped mode, that unprotected traffic never reaches the backend at all, and that raw QRS 5 fused to HIGH by the anomaly signal — inbound, scoped — still isolates nothing.
+
+**Opt-in, with no default.** `run_appliance.py --protected-subnet 192.168.50.0/24` (comma-separated for several networks), or `CIPHER_PROTECTED_SUBNETS`, with the flag winning. Unset means **no resolver**, and `run_capture` keeps `src_ip` identity byte-for-byte, so offline runs, `run_demo.py`, `run_pi_live.py`, host-live capture and the research evaluation are unaffected. An invalid CIDR exits 2 before any capture begins. No subnet is hardcoded in application logic — asserted by a test that allows `192.168.50.0/24` only inside illustrative help text, the same discipline already applied to interface names and GPIO pins. The resolver is built **only** in `run_appliance.py` and passed through the existing `capture_kwargs` composition.
+
+**Test counts.** Backend **1840 -> 1934** (+94: 54 resolver, 26 real-pipeline attribution, 14 appliance composition). All pass. The research/evaluation suites (578 tests) and the legacy entry-point suites (150 tests) pass unchanged, which is the compatibility proof. Nothing requires a Pi, an interface, root or hardware.
+
+**Not changed:** `capture/`, `enforcement/`, `hardware/`, `dashboard/`, `reports/`, `models/`, `risk/`, `ml/`, `fusion/`, `entropy/`, `signing/`, the frontend, `run_demo.py`, `run_pi_live.py`, `run_api.py`, `main.py`, and the research evaluation code. In `pipeline/runner.py` the only behavioural change is one optional parameter defaulting to `None`.
+
+---
+
 ## Approved Decisions Recap
 
 D1 (models/ package), D2 (OfflinePcapSource implemented, LiveCaptureSource scaffolded), D3 (pipeline/ package, main.py as pure composition root), and D4 (ML fail-open via `ml.loading.load_anomaly_detector`, superseding the original rule-based-fallback draft — see Section 21) are all approved and reflected above. Proceeding to Step 2: folder scaffolding.

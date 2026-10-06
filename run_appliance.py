@@ -65,8 +65,14 @@ from config.constants import APP_NAME, APP_VERSION
 from config.settings import load_settings
 from dashboard import ApplicationStateStore, create_app
 from dashboard.spa import MissingWebBuildError, register_spa, validate_web_build
+from enforcement.iptables_backend import local_ipv4_addresses
 from hardware import InvalidPinConfigurationError
 from ml.loading import load_anomaly_detector
+from pipeline.device_resolution import (
+    InvalidProtectedScopeError,
+    ProtectedScope,
+    parse_protected_networks,
+)
 from pipeline.runner import run_capture
 from signing import load_or_create_keypair
 from utils.exceptions import CipherError
@@ -170,6 +176,18 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--protected-subnet",
+        default=None,
+        help=(
+            "Comma-separated IPv4 CIDRs whose devices CIPHER is protecting, e.g. "
+            "192.168.50.0/24. When set, a packet is attributed to its protected "
+            "endpoint, so an inbound server-to-client packet counts as the client "
+            "rather than making the remote server a CIPHER device. Unset (the "
+            "default) keeps the historic source-address identity exactly. May "
+            "also be given as the CIPHER_PROTECTED_SUBNETS environment variable."
+        ),
+    )
+    parser.add_argument(
         "--filter",
         dest="bpf_filter",
         default=None,
@@ -184,6 +202,7 @@ def _print_banner(
     enforcement: str,
     display_mode: str,
     led_mode: str,
+    protected: str,
     host: str,
     port: int,
 ) -> None:
@@ -197,12 +216,44 @@ def _print_banner(
     else:
         print("Enforcement:   NONE - isolation decisions are recorded, never enforced")
     print(f"Display:       {display_mode}    LEDs: {led_mode}")
+    print(f"Protected:     {protected or 'not configured - source-address identity'}")
     print("Decryption:    NONE - no WPA/WPA2/WPA3 decryption, no deauthentication")
     print("Isolation is immediate and per-packet; the cycle only governs when the")
     print("dashboard snapshot is replaced.")
     print("-" * 62)
     print(f"Dashboard:     http://{host}:{port}")
     print("")
+
+
+def _build_protected_scope(raw: Optional[str]) -> Optional[ProtectedScope]:
+    """Build the protected scope, or None when none is configured.
+
+    None means legacy behaviour: `run_capture` keeps its historic `src_ip`
+    identity, so nothing changes for any existing run. No subnet is ever
+    defaulted — the protected network is a deployment fact, like the interface
+    name and the GPIO pins, and guessing it would silently hide real clients or
+    protect the wrong ones.
+
+    The appliance's own addresses are excluded, because on the intended
+    topology the Pi's address (for example 192.168.50.1) is *inside* the
+    protected /24 and a plain membership test would make the appliance a
+    protected device of itself. `local_ipv4_addresses()` is reused read-only
+    from the enforcement layer, which already needed exactly this answer to
+    refuse isolating the host; discovery there is best-effort, so an empty
+    result simply means one fewer exclusion.
+    """
+    networks = parse_protected_networks(raw)
+    if not networks:
+        return None
+
+    scope = ProtectedScope(networks, excluded_addresses=local_ipv4_addresses())
+    logger.info(
+        "Protected-device attribution enabled for %s (excluding this host's own "
+        "address(es): %s).",
+        ", ".join(scope.networks),
+        ", ".join(scope.excluded_addresses) or "none discovered",
+    )
+    return scope
 
 
 def _build_source_factory(
@@ -275,6 +326,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
 
+    protected_raw = args.protected_subnet or os.environ.get("CIPHER_PROTECTED_SUBNETS")
+    try:
+        protected_scope = _build_protected_scope(protected_raw)
+    except InvalidProtectedScopeError as exc:
+        print(f"Invalid protected subnet: {exc}", file=sys.stderr)
+        return 2
+
     settings = load_settings()
     configure_logging(settings)
     settings = replace(settings, capture_mode="live", live_interface=interface)
@@ -295,6 +353,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         enforcement_mode,
         display_mode,
         led_mode,
+        ", ".join(protected_scope.networks) if protected_scope else "",
         settings.flask_host,
         settings.flask_port,
     )
@@ -363,6 +422,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # gate wraps that observer unchanged; it only ensures the worker
             # cannot be mid-write when shutdown releases the hardware.
             "assessment_observer": output_gate.observe,
+            # Identity only, and only when a scope was explicitly configured.
+            # None keeps run_capture's historic src_ip behaviour untouched.
+            "device_resolver": protected_scope.resolve if protected_scope else None,
         },
         cycle_seconds=args.cycle_seconds,
     )

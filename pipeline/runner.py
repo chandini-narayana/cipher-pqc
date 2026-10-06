@@ -27,7 +27,8 @@ never silently suppressed.
 
 Phase-1 device-identity convention (frozen, NOT specified by the
 Execution Report — see docs/SDD.md's Phase 11 addendum): the observed
-device is identified by `RawPacket.src_ip`. No subnet inference, no MAC
+device is identified by `RawPacket.src_ip`, unless an explicit
+`device_resolver` is supplied (see below). No subnet inference, no MAC
 discovery, no src/dst heuristics, no vendor lookup, no network-direction
 analysis. State is a small local dict, held only for the duration of
 one `run_capture()` call — this is explicitly not `DeviceRegistry`
@@ -41,6 +42,17 @@ selection, which is a reporting concern with a different (and looser)
 timing requirement than the Execution Report's detection-to-isolation
 target. `isolation_backend` is injected by the caller (main.py /
 run_api.py); this module never constructs a hardware backend itself.
+
+`device_resolver` (optional and None by default) decides WHICH endpoint of a
+packet identifies the device. Unset — every caller except appliance mode with
+an explicitly configured protected scope — identity is `RawPacket.src_ip`,
+byte-for-byte as it has always been. Set, the protected endpoint is used
+instead, so on a gateway topology an inbound server->client packet is
+attributed to the client rather than making the remote server a CIPHER device
+(see pipeline/device_resolution.py). This changes identity only: the packet is
+never modified, no score is recomputed differently, and because enforcement,
+reports, representative selection and state all already key on `Device.ip`,
+the correct attribution propagates without any of them changing.
 
 `assessment_observer` (Phase 3F, optional and None by default) is a
 purely passive hook: each freshly-produced DeviceAssessment is handed to
@@ -84,6 +96,11 @@ from risk.port_risk import port_risk_for_protocol
 
 logger = logging.getLogger(__name__)
 
+#: Resolves (src_ip, dst_ip) to the protected device's IP, or None when a
+#: packet concerns no protected device. `None` instead of a resolver keeps
+#: CIPHER's historic `src_ip` identity; see pipeline/device_resolution.py.
+DeviceResolver = Callable[[str, str], Optional[str]]
+
 _CATEGORY_RANK = {
     RiskCategory.LOW: 0,
     RiskCategory.MEDIUM: 1,
@@ -100,6 +117,7 @@ def run_capture(
     risk_isolation_threshold: int = DEFAULT_RISK_ISOLATION_THRESHOLD,
     report_output_dir: Union[str, Path] = DEFAULT_REPORT_OUTPUT_DIR,
     assessment_observer: Optional[Callable[[DeviceAssessment], None]] = None,
+    device_resolver: Optional[DeviceResolver] = None,
 ) -> Tuple[List[DeviceAssessment], List[Tuple[Path, ReportMetadata]]]:
     """Run one full pass over `capture_source`, isolating (per
     `isolation_backend`) every device whose raw QRS reaches
@@ -163,6 +181,7 @@ def run_capture(
                 enforcement_attempted_ips,
                 isolation_by_ip,
                 assessment_observer,
+                device_resolver,
             )
         except Exception:  # noqa: BLE001 - one bad packet must not abort the run
             logger.error(
@@ -201,8 +220,22 @@ def _process_packet(
     enforcement_attempted_ips: Set[str],
     isolation_by_ip: Dict[str, IsolationStatus],
     assessment_observer: Optional[Callable[[DeviceAssessment], None]] = None,
+    device_resolver: Optional[DeviceResolver] = None,
 ) -> None:
-    device = _resolve_device(raw_packet, devices)
+    identity_ip = _resolve_identity_ip(raw_packet, device_resolver)
+    if identity_ip is None:
+        # Neither endpoint is a protected device, so this packet is not about
+        # anything CIPHER is protecting. Skipped before assessment: it is not
+        # an error, and it is counted nowhere because the capture layer already
+        # counts what it yielded.
+        logger.debug(
+            "No protected device for packet %s -> %s; skipping.",
+            raw_packet.src_ip,
+            raw_packet.dst_ip,
+        )
+        return
+
+    device = _resolve_device(identity_ip, raw_packet.timestamp, devices)
 
     fingerprint = fingerprint_packet(raw_packet.payload)
     port_risk = port_risk_for_protocol(fingerprint.protocol)
@@ -354,22 +387,42 @@ def _attach_isolation_state(
         representatives[ip] = representative.with_isolation(isolation)
 
 
-def _resolve_device(raw_packet: RawPacket, devices: Dict[str, Device]) -> Device:
-    """Phase-1 device resolution: RawPacket.src_ip identifies the
-    device. First contact establishes first_seen; a later packet only
-    ever advances last_seen forward, never backwards for an
+def _resolve_identity_ip(
+    raw_packet: RawPacket, device_resolver: Optional[DeviceResolver]
+) -> Optional[str]:
+    """Which address identifies the device this packet is about.
+
+    With no resolver — every caller except appliance mode with an explicitly
+    configured protected scope — this is `RawPacket.src_ip`, exactly as it has
+    always been. With a resolver, the protected endpoint is used instead, and
+    None means the packet concerns no protected device (see
+    pipeline/device_resolution.py). Identity only: the packet is never
+    modified, and nothing downstream of here behaves differently.
+    """
+    if device_resolver is None:
+        return raw_packet.src_ip
+    return device_resolver(raw_packet.src_ip, raw_packet.dst_ip)
+
+
+def _resolve_device(
+    identity_ip: str, observed_at: datetime, devices: Dict[str, Device]
+) -> Device:
+    """Track the Device for an already-decided identity.
+
+    Deliberately holds no policy about *which* address that is — see
+    `_resolve_identity_ip`. First contact establishes first_seen; a later
+    packet only ever advances last_seen forward, never backwards for an
     out-of-order packet."""
-    ip = raw_packet.src_ip
-    existing = devices.get(ip)
+    existing = devices.get(identity_ip)
 
     if existing is None:
-        device = Device.first_contact(ip, raw_packet.timestamp)
-    elif raw_packet.timestamp > existing.last_seen:
-        device = existing.with_last_seen(raw_packet.timestamp)
+        device = Device.first_contact(identity_ip, observed_at)
+    elif observed_at > existing.last_seen:
+        device = existing.with_last_seen(observed_at)
     else:
         device = existing
 
-    devices[ip] = device
+    devices[identity_ip] = device
     return device
 
 
