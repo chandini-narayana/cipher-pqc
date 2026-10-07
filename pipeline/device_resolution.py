@@ -96,6 +96,19 @@ def _parse_address(value: object) -> Optional[ipaddress.IPv4Address]:
     return address
 
 
+def _is_network_or_broadcast(
+    address: ipaddress.IPv4Address, network: ipaddress.IPv4Network
+) -> bool:
+    """Whether `address` is `network`'s network or broadcast address.
+
+    /31 and /32 networks have no such reserved addresses (RFC 3021), so every
+    address in them is a host.
+    """
+    if network.prefixlen >= 31:
+        return False
+    return address in (network.network_address, network.broadcast_address)
+
+
 class ProtectedScope:
     """The set of networks whose devices CIPHER is protecting, plus the
     addresses that must never be treated as protected devices.
@@ -142,16 +155,23 @@ class ProtectedScope:
         """Whether `ip` is a protected device address.
 
         False for an excluded (self) address, for anything outside every
-        configured network, and for anything that is not a parseable IPv4
+        configured network, for anything that is not a parseable IPv4
         address — a malformed or IPv6 value is never protected rather than
-        raising into the capture loop.
+        raising into the capture loop — and for the network or broadcast
+        address of any configured network that contains it. A subnet-directed
+        broadcast such as 192.168.50.255 is *inside* 192.168.50.0/24, so a
+        plain membership test would make it a device (and, at QRS >= 7, an
+        isolation target); it is never a host.
         """
         address = _parse_address(ip)
         if address is None:
             return False
         if address in self._excluded:
             return False
-        return any(address in network for network in self._networks)
+        containing = [network for network in self._networks if address in network]
+        if not containing:
+            return False
+        return not any(_is_network_or_broadcast(address, network) for network in containing)
 
     def resolve(self, src_ip: object, dst_ip: object) -> Optional[str]:
         """The protected device for this packet, or None if there is none.
@@ -170,8 +190,10 @@ class ProtectedScope:
 
         The Pi's own address is excluded by `is_protected`, so `Pi -> protected`
         resolves to the protected destination and `Internet -> Pi` resolves to
-        None. Broadcast and multicast destinations are outside every protected
-        network, so they can never become an identity on their own.
+        None. Global broadcast and multicast destinations are outside every
+        protected network, and a protected network's own network and
+        broadcast addresses are never protected (see `is_protected`), so none
+        of them can become an identity.
 
         Returns the address as the string the caller received, so the identity
         is byte-identical to what the packet carried — never a reformatted or

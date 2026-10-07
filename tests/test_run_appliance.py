@@ -786,3 +786,112 @@ def test_no_subnet_is_hardcoded_in_application_logic() -> None:
                     # never as a value the code would actually use.
                     lowered = node.value.lower()
                     assert "e.g." in lowered or "example" in lowered, node.value
+
+
+# --- isolation threshold validation (pre-demo fix S2) ----------------------
+
+
+@pytest.mark.parametrize("value", ["7", "8", "9", "10"])
+def test_a_threshold_of_seven_or_more_is_allowed(stubbed, monkeypatch, value) -> None:
+    monkeypatch.setenv("RISK_ISOLATION_THRESHOLD", value)
+
+    assert run_appliance.main(["--interface", "eth0"]) == 0
+    assert _worker().kwargs["capture_kwargs"]["risk_isolation_threshold"] == int(value)
+
+
+@pytest.mark.parametrize("value", ["6", "3", "0", "-1"])
+def test_a_threshold_below_seven_is_refused_not_clamped(stubbed, monkeypatch, capsys, value) -> None:
+    monkeypatch.setenv("RISK_ISOLATION_THRESHOLD", value)
+
+    exit_code = run_appliance.main(["--interface", "eth0", "--enforcement", "noop"])
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert f"configured isolation threshold is {value}" in err
+    assert "7 is the minimum permitted physical-isolation threshold" in err
+    assert _FakeWorker.instances == []  # nothing started, no capture
+
+
+def test_the_minimum_threshold_is_the_project_default() -> None:
+    from config.constants import DEFAULT_RISK_ISOLATION_THRESHOLD
+
+    assert run_appliance.MIN_ISOLATION_THRESHOLD == DEFAULT_RISK_ISOLATION_THRESHOLD == 7
+
+
+def test_the_banner_states_the_threshold(stubbed, capsys) -> None:
+    run_appliance.main(["--interface", "eth0"])
+    assert "raw QRS >= 7" in capsys.readouterr().out
+
+
+# --- appliance self-exclusion (pre-demo fix M3) -----------------------------
+
+
+def test_the_capture_interface_address_is_excluded_when_hostname_lookup_misses_it(
+    stubbed, monkeypatch
+) -> None:
+    """Regression: on Debian the hostname resolves to 127.0.1.1 only, so the
+    Pi's lab address used to stay protected and Pi->Windows packets were
+    attributed to the Pi."""
+    monkeypatch.setattr(run_appliance, "local_ipv4_addresses", lambda: {"127.0.1.1"})
+    monkeypatch.setattr(run_appliance, "interface_ipv4_addresses", lambda name: {"192.168.50.1"})
+
+    run_appliance.main(["--interface", "wlan1", "--protected-subnet", "192.168.50.0/24"])
+
+    resolver = _worker().kwargs["capture_kwargs"]["device_resolver"]
+    assert resolver("192.168.50.1", "192.168.50.24") == "192.168.50.24"
+    assert resolver("192.168.50.24", "192.168.50.1") == "192.168.50.24"
+
+
+def test_the_interface_addresses_are_read_for_the_named_interface(stubbed, monkeypatch) -> None:
+    asked = []
+    monkeypatch.setattr(
+        run_appliance, "interface_ipv4_addresses", lambda name: asked.append(name) or set()
+    )
+
+    run_appliance.main(["--interface", "wlan1"])
+
+    assert asked == ["wlan1"]
+
+
+def test_an_enforcing_backend_is_wrapped_with_the_same_self_addresses(stubbed, monkeypatch) -> None:
+    from appliance.interface_info import ApplianceSelfIsolationGuard
+    from enforcement.command_runner import UnavailableCommandRunner
+    from enforcement.iptables_backend import IptablesIsolationBackend
+
+    monkeypatch.setattr(run_appliance, "local_ipv4_addresses", lambda: {"127.0.1.1"})
+    monkeypatch.setattr(run_appliance, "interface_ipv4_addresses", lambda name: {"192.168.50.1"})
+    monkeypatch.setattr(
+        run_appliance,
+        "_build_isolation_backend",
+        lambda mode: IptablesIsolationBackend(command_runner=UnavailableCommandRunner()),
+    )
+
+    run_appliance.main(
+        ["--interface", "wlan1", "--enforcement", "iptables", "--protected-subnet", "192.168.50.0/24"]
+    )
+
+    backend = _worker().kwargs["capture_kwargs"]["isolation_backend"]
+    assert isinstance(backend, ApplianceSelfIsolationGuard)
+    assert isinstance(backend.wrapped, IptablesIsolationBackend)
+    assert backend.local_addresses == {"127.0.1.1", "192.168.50.1"}
+    assert backend.isolate("192.168.50.1", 9).enforced is False
+    assert "own addresses" in backend.isolate("192.168.50.1", 9).reason
+    assert "not a protected device" in backend.isolate("93.184.216.34", 9).reason
+
+
+# --- holding an enforced isolation on the outputs (pre-demo fix M5) ---------
+
+
+def test_the_worker_holds_enforced_isolation_on_the_outputs_after_each_cycle(stubbed) -> None:
+    run_appliance.main(["--interface", "eth0"])
+
+    hook = _worker().kwargs["on_cycle_published"]
+    assert callable(hook)
+
+
+def test_the_worker_is_given_an_interface_identity_probe(stubbed, monkeypatch) -> None:
+    monkeypatch.setattr(run_appliance, "interface_index", lambda name: 42 if name == "wlan1" else None)
+
+    run_appliance.main(["--interface", "wlan1"])
+
+    assert _worker().kwargs["interface_index_fn"]() == 42

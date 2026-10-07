@@ -374,3 +374,194 @@ def test_the_gate_uses_only_a_lock_and_a_flag() -> None:
 
     for forbidden in ("asyncio", "concurrent", "queue", "multiprocessing", "signal", "sched"):
         assert forbidden not in imported
+
+
+# --- holding an enforced isolation (pre-demo fix M5) -----------------------
+#
+# These drive the real frame and lamp mappings (hardware.display /
+# hardware.indicator) through the real observer fan-out, with recording
+# doubles standing in only for the physical panel and pins.
+
+from hardware.display import StatusDisplay  # noqa: E402
+from hardware.indicator import StatusIndicator  # noqa: E402
+from models.isolation_status import IsolationStatus  # noqa: E402
+from run_pi_live import _build_assessment_observer  # noqa: E402
+
+_ISOLATED_IP = "192.168.50.24"
+
+
+class _Panel(StatusDisplay):
+    display_name = "panel"
+
+    def __init__(self) -> None:
+        self.frames: List[List[str]] = []
+
+    def start(self) -> bool:
+        return True
+
+    def show_lines(self, lines) -> None:
+        self.frames.append(list(lines))
+
+    def close(self) -> None:
+        pass
+
+
+class _Lamps(StatusIndicator):
+    indicator_name = "lamps"
+
+    def __init__(self) -> None:
+        self.lit: List[Optional[str]] = []
+
+    def start(self) -> bool:
+        return True
+
+    def show_lamp(self, lamp) -> None:
+        self.lit.append(lamp)
+
+    def close(self) -> None:
+        pass
+
+
+def _scored(
+    ip: str,
+    score: int,
+    category: RiskCategory,
+    enforced: Optional[bool] = None,
+    hour: int = 12,
+) -> DeviceAssessment:
+    assessment = DeviceAssessment(
+        device=Device.first_contact(ip, TS),
+        risk_assessment=RiskAssessment(score, category, "Upgrade TLS.", "NIST SP 800-52r2"),
+        anomaly_assessment=None,
+        final_category=category,
+        assessed_at=TS,
+    )
+    if enforced is None:
+        return assessment
+    return assessment.with_isolation(
+        IsolationStatus(
+            requested=True,
+            enforced=enforced,
+            backend="linux-iptables",
+            reason="test",
+            requested_at=TS.replace(hour=hour),
+            enforcement_capable=True,
+        )
+    )
+
+
+def _real_gate():
+    panel, lamps = _Panel(), _Lamps()
+    gate = HardwareOutputGate(
+        observer=_build_assessment_observer(panel, lamps),
+        close_calls=[],
+        safe_call=_safe_call,
+    )
+    return gate, panel, lamps
+
+
+@pytest.mark.parametrize(
+    "score,category,lamp",
+    [(1, RiskCategory.LOW, "green"), (5, RiskCategory.MEDIUM, "amber"), (7, RiskCategory.HIGH, "red")],
+)
+def test_without_an_isolation_per_packet_output_is_unchanged(score, category, lamp) -> None:
+    gate, panel, lamps = _real_gate()
+
+    gate.observe(_scored("192.168.50.24", score, category))
+
+    assert lamps.lit[-1] == lamp
+    assert panel.frames[-1][3] == f"Risk: {category.value}"
+
+
+def test_a_held_isolation_shows_high_isolated_and_red() -> None:
+    gate, panel, lamps = _real_gate()
+
+    gate.hold_isolated([_scored(_ISOLATED_IP, 7, RiskCategory.HIGH, enforced=True)])
+
+    assert panel.frames[-1] == [
+        "CIPHER",
+        f"Device: {_ISOLATED_IP}",
+        "QRS: 7/10",
+        "Risk: HIGH",
+        "Isolation: ISOLATED",
+    ]
+    assert lamps.lit[-1] == "red"
+
+
+def test_a_later_medium_packet_does_not_overwrite_the_isolated_state() -> None:
+    """Regression: the next MEDIUM packet used to turn the red lamp amber and
+    the panel back to 'Isolation: N/A' within milliseconds."""
+    gate, panel, lamps = _real_gate()
+    gate.hold_isolated([_scored(_ISOLATED_IP, 7, RiskCategory.HIGH, enforced=True)])
+    frames, lit = len(panel.frames), len(lamps.lit)
+
+    gate.observe(_scored(_ISOLATED_IP, 5, RiskCategory.MEDIUM))
+    gate.observe(_scored("192.168.50.30", 1, RiskCategory.LOW))
+
+    assert len(panel.frames) == frames and len(lamps.lit) == lit
+    assert panel.frames[-1][-1] == "Isolation: ISOLATED"
+    assert lamps.lit[-1] == "red"
+
+
+def test_the_hold_is_kept_across_cycles_without_rewriting() -> None:
+    gate, panel, lamps = _real_gate()
+    isolated = _scored(_ISOLATED_IP, 7, RiskCategory.HIGH, enforced=True)
+
+    for _ in range(3):
+        gate.hold_isolated([isolated, _scored("192.168.50.30", 5, RiskCategory.MEDIUM)])
+
+    assert len(panel.frames) == 1  # rendered once, then held without writes
+    assert gate.held is isolated
+
+
+def test_the_hold_is_released_only_when_no_enforced_isolation_remains() -> None:
+    """In the running appliance the published state keeps an enforced
+    isolation for the life of the process, so this happens at restart."""
+    gate, panel, lamps = _real_gate()
+    gate.hold_isolated([_scored(_ISOLATED_IP, 7, RiskCategory.HIGH, enforced=True)])
+
+    gate.hold_isolated([_scored(_ISOLATED_IP, 5, RiskCategory.MEDIUM)])
+    gate.observe(_scored(_ISOLATED_IP, 5, RiskCategory.MEDIUM))
+
+    assert gate.held is None
+    assert lamps.lit[-1] == "amber"
+
+
+def test_a_failed_or_noop_isolation_is_never_held() -> None:
+    gate, panel, lamps = _real_gate()
+
+    gate.hold_isolated([_scored(_ISOLATED_IP, 7, RiskCategory.HIGH, enforced=False)])
+
+    assert gate.held is None
+    assert panel.frames == [] and lamps.lit == []
+
+
+def test_the_most_recently_isolated_device_is_shown() -> None:
+    gate, panel, lamps = _real_gate()
+
+    gate.hold_isolated(
+        [
+            _scored("192.168.50.24", 7, RiskCategory.HIGH, enforced=True, hour=12),
+            _scored("192.168.50.31", 8, RiskCategory.HIGH, enforced=True, hour=13),
+        ]
+    )
+
+    assert panel.frames[-1][1] == "Device: 192.168.50.31"
+
+
+def test_a_closed_gate_never_shows_a_hold() -> None:
+    gate, panel, lamps = _real_gate()
+    gate.close()
+
+    gate.hold_isolated([_scored(_ISOLATED_IP, 7, RiskCategory.HIGH, enforced=True)])
+
+    assert panel.frames == [] and lamps.lit == []
+
+
+def test_a_raising_device_cannot_escape_hold_isolated() -> None:
+    def _explode(assessment):
+        raise RuntimeError("I2C wedged")
+
+    gate = HardwareOutputGate(observer=_explode, close_calls=[], safe_call=_safe_call)
+
+    gate.hold_isolated([_scored(_ISOLATED_IP, 7, RiskCategory.HIGH, enforced=True)])  # must not raise

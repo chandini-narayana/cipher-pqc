@@ -123,12 +123,39 @@ def test_an_adjacent_subnet_is_not_protected() -> None:
     assert _scope().is_protected("192.168.51.24") is False
 
 
-def test_the_network_and_broadcast_addresses_of_the_scope() -> None:
-    """Both are inside the CIDR, so membership reports True; neither can arrive
-    as a packet source on this topology, and a broadcast destination cannot
-    make a remote source into a device (see the broadcast tests below)."""
-    assert _scope().is_protected("192.168.50.0") is True
-    assert _scope().is_protected("192.168.50.255") is True
+def test_the_network_and_broadcast_addresses_of_the_scope_are_not_protected() -> None:
+    """Both are inside the CIDR but neither is a host, so neither may ever
+    become a device identity (or, at QRS >= 7, an isolation target)."""
+    assert _scope().is_protected("192.168.50.0") is False
+    assert _scope().is_protected("192.168.50.255") is False
+
+
+def test_pi_to_subnet_broadcast_resolves_to_nothing() -> None:
+    """Regression: the excluded Pi sending a subnet-directed broadcast used to
+    make 192.168.50.255 the device."""
+    assert _scope().resolve(PI, "192.168.50.255") is None
+    assert _scope().resolve(PI, "192.168.50.0") is None
+
+
+def test_remote_to_subnet_broadcast_resolves_to_nothing() -> None:
+    assert _scope().resolve(REMOTE, "192.168.50.255") is None
+
+
+def test_hosts_at_the_edges_of_the_scope_are_still_protected() -> None:
+    assert _scope().is_protected("192.168.50.2") is True
+    assert _scope().is_protected("192.168.50.254") is True
+
+
+def test_a_broadcast_of_one_network_is_refused_even_if_another_network_contains_it() -> None:
+    scope = ProtectedScope(["10.0.0.0/24", "10.0.0.0/16"])
+    assert scope.is_protected("10.0.0.255") is False
+    assert scope.is_protected("10.0.1.255") is True  # a host of the /16 only
+
+
+def test_slash_31_and_slash_32_networks_have_no_reserved_addresses() -> None:
+    assert ProtectedScope(["10.9.9.0/31"]).is_protected("10.9.9.0") is True
+    assert ProtectedScope(["10.9.9.0/31"]).is_protected("10.9.9.1") is True
+    assert ProtectedScope(["10.9.9.9/32"]).is_protected("10.9.9.9") is True
 
 
 # --- broadcast and multicast ---------------------------------------------

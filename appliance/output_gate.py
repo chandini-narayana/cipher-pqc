@@ -34,12 +34,26 @@ still tears everything down and the OS releases the bus and pins.
 No new runtime, service framework or event system: one lock and one flag,
 following the same "smallest explicit synchronisation" approach as
 `dashboard.state_store`.
+
+**Holding the isolated state.** Per-packet observer calls carry assessments
+produced *before* `run_capture` attaches isolation state (that happens at
+cycle end), so on their own they can never show ISOLATED, and the next
+MEDIUM packet would turn a red lamp amber within milliseconds while the
+device stays isolated. `hold_isolated()` is called once per cycle with the
+published dashboard assessments. While any of them records an *enforced*
+isolation, the most recently isolated one is shown — HIGH, red, "Isolation:
+ISOLATED" — and per-packet writes are suppressed so a later lower-priority
+observation cannot overwrite it. With no enforced isolation, per-packet
+output is exactly as before (LOW green, MEDIUM amber, HIGH red). The hold is
+released only when no published assessment records an enforced isolation,
+which in the running appliance means at restart. This changes only *what is
+shown*: it runs after the cycle, so isolation itself is never delayed.
 """
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Callable
+from typing import Callable, Iterable, Optional
 
 from models.device_assessment import DeviceAssessment
 
@@ -89,11 +103,17 @@ class HardwareOutputGate:
         self._lock = threading.Lock()
         self._closed = threading.Event()
         self._closed_devices = False
+        self._held: Optional[DeviceAssessment] = None
 
     @property
     def closed(self) -> bool:
         """Whether hardware output has been disabled."""
         return self._closed.is_set()
+
+    @property
+    def held(self) -> Optional[DeviceAssessment]:
+        """The isolated assessment currently held on the outputs, if any."""
+        return self._held
 
     @property
     def devices_released(self) -> bool:
@@ -112,7 +132,39 @@ class HardwareOutputGate:
         with self._lock:
             if self._closed.is_set():
                 return
+            if self._held is not None:
+                # An enforced isolation is on display; a per-packet frame
+                # (which never carries isolation state) must not replace it.
+                return
             self._safe_call("assessment output", self._observer, assessment)
+
+    def hold_isolated(self, assessments: Iterable[DeviceAssessment]) -> None:
+        """Show, and keep showing, the most recently enforced isolation among
+        `assessments` (the published dashboard state). Never raises.
+
+        Renders only when the held assessment changes, so a steady state
+        issues no repeated writes. With no enforced isolation present, any
+        previous hold is released and per-packet output resumes.
+        """
+        isolated = [
+            assessment
+            for assessment in assessments
+            if assessment.isolation is not None and assessment.isolation.enforced is True
+        ]
+        newest = max(isolated, key=lambda a: a.isolation.requested_at, default=None)
+
+        if self._closed.is_set():
+            return
+        with self._lock:
+            if self._closed.is_set():
+                return
+            if newest is None:
+                self._held = None
+                return
+            if newest is self._held:
+                return
+            self._held = newest
+            self._safe_call("isolation output", self._observer, newest)
 
     def close(self) -> bool:
         """Disable hardware output, then release the devices.

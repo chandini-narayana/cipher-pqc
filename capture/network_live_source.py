@@ -214,6 +214,15 @@ class NetworkLiveCaptureSource(CaptureSource):
                     "timeout": self._timeout,
                     "count": self._packet_limit,
                     "store": False,
+                    # Never promiscuous. On an AP-mode interface every frame
+                    # this pipeline can use is already addressed to this
+                    # host or sent by it, so promiscuous mode adds nothing —
+                    # and toggling IFF_PROMISC on every bounded cycle makes
+                    # the Wi-Fi driver reprogram its receive filter each
+                    # time. It also makes scapy add a PACKET_MR_PROMISC
+                    # membership by cached ifindex, which fails with ENODEV
+                    # if the interface was re-created under the same name.
+                    "promisc": False,
                     "prn": _on_packet,
                     "stop_filter": lambda _pkt: stop_event.is_set(),
                 }

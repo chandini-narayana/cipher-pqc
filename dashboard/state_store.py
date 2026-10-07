@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from models.device_assessment import DeviceAssessment
 from models.report_metadata import ReportMetadata
@@ -89,7 +89,19 @@ class ApplicationStateStore:
             the last few seconds;
           * a device's report mapping holds the latest report returned for
             it, keyed exactly as `build_application_state` keys it
-            (`metadata.device_ip`).
+            (`metadata.device_ip`);
+          * **an enforced isolation is sticky.** `run_capture` scopes its
+            isolation record to one cycle, but the DROP rules it installed
+            persist. So when a device's published entry carries an enforced
+            isolation and this cycle's entry for it carries no isolation
+            record at all, the published entry *and its report* (the signed
+            report that records the isolation) are kept rather than
+            replaced — the dashboard must never claim a device is no longer
+            isolated while the firewall still isolates it. A newer entry
+            that does carry an isolation record (a later attempt) replaces
+            it normally. Nothing in the running appliance removes rules, so
+            the hold lasts for the life of the process; restoration is an
+            operator action taken with the appliance stopped.
 
         Nothing is recomputed here: assessments arrive already assessed,
         already fused and already carrying their isolation state.
@@ -106,15 +118,22 @@ class ApplicationStateStore:
 
             added = 0
             replaced = 0
+            held: Set[str] = set()
             for assessment in assessments:
                 ip = assessment.device.ip
-                if ip in new_assessments:
+                existing = new_assessments.get(ip)
+                if _holds_enforced_isolation(existing) and assessment.isolation is None:
+                    held.add(ip)
+                    continue
+                if existing is not None:
                     replaced += 1
                 else:
                     added += 1
                 new_assessments[ip] = assessment
 
             for path, metadata in reports:
+                if metadata.device_ip in held:
+                    continue
                 new_reports[metadata.device_ip] = (path, metadata)
 
             state = ApplicationState(
@@ -123,13 +142,24 @@ class ApplicationStateStore:
             self._state = state
 
         logger.debug(
-            "Published cycle state: %d device(s) total (%d new, %d updated), %d report(s).",
+            "Published cycle state: %d device(s) total (%d new, %d updated, %d held "
+            "isolated), %d report(s).",
             len(new_assessments),
             added,
             replaced,
+            len(held),
             len(new_reports),
         )
         return state
+
+
+def _holds_enforced_isolation(assessment: Optional[DeviceAssessment]) -> bool:
+    """Whether a published entry records an isolation that was enforced."""
+    return (
+        assessment is not None
+        and assessment.isolation is not None
+        and assessment.isolation.enforced is True
+    )
 
 
 def resolve_state_store(state: object) -> ApplicationStateStore:
