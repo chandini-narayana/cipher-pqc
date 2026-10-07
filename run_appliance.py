@@ -108,6 +108,11 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 #: not be able to quietly weaken it.
 MIN_ISOLATION_THRESHOLD = DEFAULT_RISK_ISOLATION_THRESHOLD
 
+#: The highest meaningful isolation threshold: the Quantum Risk Score is capped
+#: at 10 (risk.scoring.quantum_risk_score), so a threshold above 10 could never
+#: be met and would silently disable physical isolation. Refused, never clamped.
+MAX_ISOLATION_THRESHOLD = 10
+
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -387,14 +392,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Invalid protected subnet: {exc}", file=sys.stderr)
         return 2
 
-    settings = load_settings()
-    if settings.risk_isolation_threshold < MIN_ISOLATION_THRESHOLD:
+    if enforcement_mode == "iptables" and protected_scope is None:
+        # Without a scope, identity falls back to RawPacket.src_ip, under which
+        # return traffic makes a remote server the device — and, at raw QRS >= 7,
+        # the iptables target. Real enforcement is therefore never allowed on
+        # that fallback. No subnet is defaulted or inferred.
         print(
-            f"Refusing to start: the configured isolation threshold is "
-            f"{settings.risk_isolation_threshold} (RISK_ISOLATION_THRESHOLD), but "
+            "Refusing to start: physical iptables enforcement requires a protected "
+            "subnet/scope. Pass --protected-subnet <CIDR> (for example "
+            "--protected-subnet 192.168.50.0/24) or set CIPHER_PROTECTED_SUBNETS. "
+            "Without it, device identity falls back to the packet source address and "
+            "a remote host could become an isolation target. No subnet is assumed.",
+            file=sys.stderr,
+        )
+        return 2
+
+    settings = load_settings()
+    threshold = settings.risk_isolation_threshold
+    if not MIN_ISOLATION_THRESHOLD <= threshold <= MAX_ISOLATION_THRESHOLD:
+        print(
+            f"Refusing to start: the configured isolation threshold is {threshold} "
+            f"(RISK_ISOLATION_THRESHOLD), but it must be between "
+            f"{MIN_ISOLATION_THRESHOLD} and {MAX_ISOLATION_THRESHOLD}. "
             f"{MIN_ISOLATION_THRESHOLD} is the minimum permitted physical-isolation "
-            f"threshold. Only a raw deterministic QRS >= {MIN_ISOLATION_THRESHOLD} may "
-            "authorize isolation.",
+            f"threshold: only a raw deterministic QRS >= {MIN_ISOLATION_THRESHOLD} may "
+            f"authorize isolation. {MAX_ISOLATION_THRESHOLD} is the maximum, because "
+            f"the QRS is capped at {MAX_ISOLATION_THRESHOLD} and a higher threshold "
+            "could never be met.",
             file=sys.stderr,
         )
         return 2

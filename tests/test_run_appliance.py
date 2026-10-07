@@ -895,3 +895,195 @@ def test_the_worker_is_given_an_interface_identity_probe(stubbed, monkeypatch) -
     run_appliance.main(["--interface", "wlan1"])
 
     assert _worker().kwargs["interface_index_fn"]() == 42
+
+
+# --- final pre-Pi patch: iptables requires a protected scope ---------------
+
+
+def _iptables_without_firewall(monkeypatch) -> None:
+    """Real IptablesIsolationBackend, but with a runner that executes nothing,
+    so no firewall can be touched (and the Linux guard is bypassed on Windows)."""
+    from enforcement.command_runner import UnavailableCommandRunner
+    from enforcement.iptables_backend import IptablesIsolationBackend
+
+    monkeypatch.setattr(
+        run_appliance,
+        "_build_isolation_backend",
+        lambda mode: IptablesIsolationBackend(command_runner=UnavailableCommandRunner()),
+    )
+
+
+def test_noop_without_a_scope_still_starts(stubbed) -> None:
+    from enforcement import NoOpIsolationBackend
+
+    assert run_appliance.main(["--interface", "eth0", "--enforcement", "noop"]) == 0
+    capture_kwargs = _worker().kwargs["capture_kwargs"]
+    assert isinstance(capture_kwargs["isolation_backend"], NoOpIsolationBackend)
+    assert capture_kwargs["device_resolver"] is None
+
+
+def test_iptables_with_a_scope_starts(stubbed, monkeypatch) -> None:
+    _iptables_without_firewall(monkeypatch)
+
+    exit_code = run_appliance.main(
+        ["--interface", "wlan1", "--enforcement", "iptables", "--protected-subnet", "192.168.50.0/24"]
+    )
+
+    assert exit_code == 0
+    assert _worker().kwargs["capture_kwargs"]["device_resolver"] is not None
+
+
+def test_iptables_with_a_scope_from_the_environment_starts(stubbed, monkeypatch) -> None:
+    _iptables_without_firewall(monkeypatch)
+    monkeypatch.setenv("CIPHER_PROTECTED_SUBNETS", "192.168.50.0/24")
+
+    assert run_appliance.main(["--interface", "wlan1", "--enforcement", "iptables"]) == 0
+
+
+def test_iptables_without_a_scope_is_refused(stubbed, monkeypatch, capsys) -> None:
+    """Without a scope, identity falls back to src_ip, under which a remote
+    server can become the isolation target. Real enforcement must refuse."""
+    _iptables_without_firewall(monkeypatch)
+
+    exit_code = run_appliance.main(["--interface", "wlan1", "--enforcement", "iptables"])
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "physical iptables enforcement requires a protected subnet/scope" in err
+    assert _FakeWorker.instances == []  # no capture, no worker
+    assert stubbed["display"].started is False  # no hardware touched
+    assert stubbed["indicator"].started is False
+
+
+def test_iptables_from_the_environment_without_a_scope_is_refused(stubbed, monkeypatch, capsys) -> None:
+    _iptables_without_firewall(monkeypatch)
+    monkeypatch.setenv("CIPHER_ENFORCEMENT", "iptables")
+
+    assert run_appliance.main(["--interface", "wlan1"]) == 2
+    assert "requires a protected subnet/scope" in capsys.readouterr().err
+
+
+def test_no_subnet_is_inferred_for_iptables(stubbed, monkeypatch) -> None:
+    """Even with a discoverable interface address, no scope is invented."""
+    _iptables_without_firewall(monkeypatch)
+    monkeypatch.setattr(run_appliance, "interface_ipv4_addresses", lambda name: {"192.168.50.1"})
+
+    assert run_appliance.main(["--interface", "wlan1", "--enforcement", "iptables"]) == 2
+
+
+# --- final pre-Pi patch: threshold range 7..10 ------------------------------
+
+
+@pytest.mark.parametrize("value", ["11", "12", "100"])
+def test_a_threshold_above_ten_is_refused_not_clamped(stubbed, monkeypatch, capsys, value) -> None:
+    """QRS is capped at 10, so a higher threshold would silently disable
+    isolation."""
+    monkeypatch.setenv("RISK_ISOLATION_THRESHOLD", value)
+
+    assert run_appliance.main(["--interface", "eth0"]) == 2
+    err = capsys.readouterr().err
+    assert f"configured isolation threshold is {value}" in err
+    assert "must be between 7 and 10" in err
+    assert _FakeWorker.instances == []
+
+
+@pytest.mark.parametrize("value,exit_code", [("6", 2), ("7", 0), ("8", 0), ("9", 0), ("10", 0), ("11", 2)])
+def test_the_threshold_boundaries(stubbed, monkeypatch, value, exit_code) -> None:
+    monkeypatch.setenv("RISK_ISOLATION_THRESHOLD", value)
+    assert run_appliance.main(["--interface", "eth0"]) == exit_code
+
+
+def test_the_default_threshold_is_unchanged_and_accepted(stubbed) -> None:
+    assert run_appliance.main(["--interface", "eth0"]) == 0
+    assert _worker().kwargs["capture_kwargs"]["risk_isolation_threshold"] == 7
+    assert run_appliance.MAX_ISOLATION_THRESHOLD == 10
+
+
+# --- final pre-Pi patch: the real main() M5 wiring --------------------------
+
+
+def test_main_wires_an_enforced_isolation_into_a_held_oled_and_led(stubbed, monkeypatch) -> None:
+    """Exercises the hook main() itself passes to the worker — not a copy of
+    it — while the run is live, with the real frame and lamp mappings."""
+    from dashboard.state import build_application_state
+    from hardware.display import StatusDisplay
+    from hardware.indicator import StatusIndicator
+
+    class _Panel(StatusDisplay):
+        display_name = "panel"
+
+        def __init__(self) -> None:
+            self.frames: List[list] = []
+
+        def start(self) -> bool:
+            return True
+
+        def show_lines(self, lines) -> None:
+            self.frames.append(list(lines))
+
+        def close(self) -> None:
+            pass
+
+    class _Lamps(StatusIndicator):
+        indicator_name = "lamps"
+
+        def __init__(self) -> None:
+            self.lit: List[Optional[str]] = []
+
+        def start(self) -> bool:
+            return True
+
+        def show_lamp(self, lamp) -> None:
+            self.lit.append(lamp)
+
+        def close(self) -> None:
+            pass
+
+    panel, lamps = _Panel(), _Lamps()
+    monkeypatch.setattr(run_appliance, "_build_status_display", lambda mode: panel)
+    monkeypatch.setattr(run_appliance, "_build_status_indicator", lambda mode, pins: lamps)
+
+    enforced = IsolationStatus(
+        requested=True,
+        enforced=True,
+        backend="linux-iptables",
+        reason="Isolated 192.168.50.24",
+        requested_at=TS,
+        enforcement_capable=True,
+    )
+    medium = DeviceAssessment(
+        device=Device.first_contact("192.168.50.24", TS),
+        risk_assessment=RiskAssessment(5, RiskCategory.MEDIUM, "r", "n"),
+        anomaly_assessment=None,
+        final_category=RiskCategory.MEDIUM,
+        assessed_at=TS,
+    )
+    during_run = {}
+
+    def _live_cycle(worker_self):
+        # What the real worker does after publishing a cycle, using exactly
+        # the hook and observer main() composed.
+        state = build_application_state([_assessment("192.168.50.24", isolation=enforced)], [])
+        worker_self.kwargs["on_cycle_published"](state)
+        worker_self.kwargs["capture_kwargs"]["assessment_observer"](medium)
+        during_run["frames"] = list(panel.frames)
+        during_run["lamps"] = list(lamps.lit)
+
+        class _Thread:
+            daemon = True
+
+            def join(self, timeout=None):
+                pass
+
+            def is_alive(self):
+                return False
+
+        return _Thread()
+
+    monkeypatch.setattr(_FakeWorker, "start_thread", _live_cycle)
+
+    assert run_appliance.main(["--interface", "eth0"]) == 0
+
+    isolated_frame = ["CIPHER", "Device: 192.168.50.24", "QRS: 9/10", "Risk: HIGH", "Isolation: ISOLATED"]
+    assert during_run["frames"][-1] == isolated_frame  # the MEDIUM frame never rendered
+    assert during_run["lamps"] == [None, "red"]  # ready, then held red; no amber
