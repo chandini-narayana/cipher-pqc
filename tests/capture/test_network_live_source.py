@@ -113,6 +113,29 @@ def test_the_explicit_interface_is_passed_to_the_capture_layer(monkeypatch) -> N
     assert kwargs["count"] == 7
 
 
+def test_sniff_is_never_run_in_promiscuous_mode(monkeypatch) -> None:
+    """Regression: scapy defaults to promiscuous mode, which toggled
+    IFF_PROMISC on the AP interface every capture cycle."""
+    kwargs = {}
+    _stub_sniff(monkeypatch, [_tcp_packet(_DEVICE_A, _SERVER, 40000, 443)], kwargs)
+
+    source = NetworkLiveCaptureSource(interface="wlan1", timeout=5, packet_limit=7)
+    list(source.read_packets())
+
+    assert kwargs["promisc"] is False
+
+
+def test_promisc_false_leaves_every_other_sniff_argument_unchanged(monkeypatch) -> None:
+    kwargs = {}
+    _stub_sniff(monkeypatch, [], kwargs)
+
+    source = NetworkLiveCaptureSource(interface="wlan1", timeout=5, packet_limit=7)
+    list(source.read_packets())
+
+    assert set(kwargs) == {"iface", "timeout", "count", "store", "promisc", "prn", "stop_filter"}
+    assert kwargs["store"] is False
+
+
 def test_no_interface_name_is_hardcoded_in_the_module() -> None:
     """Interface names belong to the operator and the composition root,
     never to reusable capture code.

@@ -420,3 +420,221 @@ def test_the_worker_module_contains_no_assessment_or_policy_logic() -> None:
         "final_category",
     ):
         assert forbidden not in identifiers
+
+
+# --- failure retry delay (pre-demo fix S1) ---------------------------------
+
+
+def test_a_failed_cycle_waits_one_cycle_length_before_retrying() -> None:
+    """Regression: a persistent failure (e.g. [Errno 19]) used to retry every
+    0.1s with a full traceback each time."""
+    worker = _worker(_Harness(), cycle_seconds=5.0)
+    slept = []
+    calls = {"count": 0}
+
+    def _fail_twice(capture_source, **kwargs):
+        calls["count"] += 1
+        if calls["count"] >= 3:
+            worker.stop()
+            return ([], [])
+        raise CaptureError("No such device")
+
+    worker._run_capture = _fail_twice
+    worker.run_forever(sleep=slept.append)
+
+    assert slept == [5.0, 5.0]
+    assert worker.cycles_failed == 2
+
+
+def test_an_unexpected_error_also_waits_one_cycle_length() -> None:
+    worker = _worker(_Harness(), cycle_seconds=3.0)
+    slept = []
+
+    def _boom(capture_source, **kwargs):
+        worker.stop() if slept else None
+        raise RuntimeError("boom")
+
+    worker._run_capture = _boom
+    worker.run_forever(sleep=slept.append)
+
+    assert slept == [3.0]
+
+
+def test_a_successful_slow_cycle_is_not_delayed() -> None:
+    """Normal timing is unchanged: the capture bound paces successful cycles."""
+    import appliance.worker as worker_module
+
+    worker = _worker(_Harness())
+    slept = []
+    calls = {"count": 0}
+    original_monotonic = worker_module.time.monotonic
+    clock = {"now": 0.0}
+
+    def _slow(capture_source, **kwargs):
+        clock["now"] += 5.0  # the cycle took its full bound
+        calls["count"] += 1
+        if calls["count"] >= 2:
+            worker.stop()
+        return ([], [])
+
+    worker._run_capture = _slow
+    worker_module.time.monotonic = lambda: clock["now"]
+    try:
+        worker.run_forever(sleep=slept.append)
+    finally:
+        worker_module.time.monotonic = original_monotonic
+
+    assert slept == []
+
+
+def test_the_default_failure_pause_wakes_early_on_stop() -> None:
+    worker = _worker(_Harness(), cycle_seconds=30.0)
+
+    def _fail(capture_source, **kwargs):
+        threading.Timer(0.05, worker.stop).start()
+        raise CaptureError("No such device")
+
+    worker._run_capture = _fail
+    thread = threading.Thread(target=worker.run_forever)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+
+
+# --- post-publish hook (feeds the held isolation output, M5) ---------------
+
+
+def test_the_hook_receives_each_published_state() -> None:
+    harness = _Harness(results=[([_assessment("10.0.0.5")], [])])
+    published = []
+    worker = _worker(harness, on_cycle_published=published.append)
+
+    worker.run_cycle()
+
+    assert len(published) == 1
+    assert "10.0.0.5" in published[0].assessments_by_ip
+
+
+def test_the_hook_is_not_called_for_a_failed_cycle() -> None:
+    published = []
+    worker = _worker(_Harness(), on_cycle_published=published.append)
+
+    def _fail(capture_source, **kwargs):
+        raise CaptureError("x")
+
+    worker._run_capture = _fail
+    worker.run_cycle()
+
+    assert published == []
+
+
+def test_a_raising_hook_never_fails_the_cycle(caplog) -> None:
+    def _explode(state):
+        raise RuntimeError("panel gone")
+
+    worker = _worker(_Harness(), on_cycle_published=_explode)
+
+    with caplog.at_level(logging.WARNING):
+        assert worker.run_cycle() is True
+    assert worker.cycles_completed == 1
+
+
+# --- silent capture observability (pre-demo fix S4) ------------------------
+
+
+class _Counters:
+    def __init__(self, seen: int) -> None:
+        self.seen = seen
+
+
+class _CountingSource:
+    def __init__(self, seen: int) -> None:
+        self.counters = _Counters(seen)
+
+
+def _counting_worker(seen_per_cycle, **kwargs):
+    seen = list(seen_per_cycle)
+    return ApplianceCaptureWorker(
+        store=ApplicationStateStore(),
+        source_factory=lambda: _CountingSource(seen.pop(0)),
+        run_capture_fn=lambda source, **kw: ([], []),
+        **kwargs,
+    )
+
+
+def test_consecutive_silent_cycles_produce_a_warning(caplog) -> None:
+    worker = _counting_worker([0, 0, 0], silent_cycle_warning=3)
+
+    with caplog.at_level(logging.WARNING, logger="appliance.worker"):
+        for _ in range(3):
+            worker.run_cycle()
+
+    assert worker.consecutive_silent_cycles == 3
+    assert "No frames captured for 3 consecutive cycle(s)" in caplog.text
+    assert "does not attempt any repair" in caplog.text
+
+
+def test_a_cycle_with_frames_resets_the_silent_count(caplog) -> None:
+    worker = _counting_worker([0, 0, 4, 0, 0], silent_cycle_warning=3)
+
+    with caplog.at_level(logging.WARNING, logger="appliance.worker"):
+        for _ in range(5):
+            worker.run_cycle()
+
+    assert worker.consecutive_silent_cycles == 2
+    assert "No frames captured" not in caplog.text
+
+
+def test_a_source_without_counters_is_never_called_silent() -> None:
+    worker = _worker(_Harness(), silent_cycle_warning=1)
+    for _ in range(3):
+        worker.run_cycle()
+    assert worker.consecutive_silent_cycles == 0
+
+
+def test_a_recreated_interface_is_reported(caplog) -> None:
+    indexes = iter([5, 5, 9])
+    worker = _worker(_Harness(), interface_index_fn=lambda: next(indexes))
+
+    with caplog.at_level(logging.WARNING, logger="appliance.worker"):
+        for _ in range(3):
+            worker.run_cycle()
+
+    assert "re-created (ifindex 5 -> 9)" in caplog.text
+
+
+def test_a_missing_interface_is_reported_once(caplog) -> None:
+    worker = _worker(_Harness(), interface_index_fn=lambda: None)
+
+    with caplog.at_level(logging.WARNING, logger="appliance.worker"):
+        for _ in range(3):
+            worker.run_cycle()
+
+    assert caplog.text.count("capture interface is not present") == 1
+
+
+def test_a_raising_interface_probe_never_fails_the_cycle() -> None:
+    def _explode():
+        raise OSError("sysfs unreadable")
+
+    worker = _worker(_Harness(), interface_index_fn=_explode)
+    assert worker.run_cycle() is True
+
+
+def test_observability_never_runs_a_repair_command() -> None:
+    """S4 is logging only: the worker must not shell out to iw, ip, nmcli,
+    systemctl or hostapd."""
+    import ast
+    import inspect
+
+    import appliance.worker as worker_module
+
+    imported = set()
+    for node in ast.walk(ast.parse(inspect.getsource(worker_module))):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    assert not imported & {"subprocess", "os"}

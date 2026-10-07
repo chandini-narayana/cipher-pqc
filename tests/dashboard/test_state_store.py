@@ -321,3 +321,137 @@ def test_resolve_rejects_anything_else(value) -> None:
 
 def test_an_empty_application_state_is_valid() -> None:
     assert ApplicationState().devices_assessed == 0
+
+
+# --- sticky enforced isolation (pre-demo fix M4) ---------------------------
+
+_DEVICE = "192.168.50.24"
+
+
+def _status(enforced: bool = True, capable: bool = True) -> IsolationStatus:
+    return IsolationStatus(
+        requested=True,
+        enforced=enforced,
+        backend="linux-iptables",
+        reason="Isolated" if enforced else "iptables failed",
+        requested_at=TS,
+        enforcement_capable=capable,
+    )
+
+
+def test_an_enforced_isolation_is_not_downgraded_by_a_later_unisolated_cycle() -> None:
+    """Regression: cycle 2's MEDIUM assessment (no isolation record, because
+    run_capture's isolation record is per cycle) used to replace cycle 1's
+    HIGH/Enforced entry while the DROP rules were still installed."""
+    store = ApplicationStateStore()
+    store.publish_cycle(
+        [_assessment(_DEVICE, 7, RiskCategory.HIGH, isolation=_status())],
+        [_report(_DEVICE, "report1")],
+    )
+
+    state = store.publish_cycle(
+        [_assessment(_DEVICE, 5, RiskCategory.MEDIUM)],
+        [_report(_DEVICE, "report2")],
+    )
+
+    held = state.get_assessment(_DEVICE)
+    assert held.final_category is RiskCategory.HIGH
+    assert held.risk_assessment.risk_score == 7
+    assert held.isolation is not None
+    assert held.isolation.enforced is True
+    assert held.isolation.status_label == "Enforced"
+
+
+def test_the_isolation_report_stays_associated_with_the_held_device() -> None:
+    """The report the dashboard links is the signed one that records the
+    isolation, not a later MEDIUM report without it."""
+    store = ApplicationStateStore()
+    store.publish_cycle(
+        [_assessment(_DEVICE, 7, RiskCategory.HIGH, isolation=_status())],
+        [_report(_DEVICE, "report1")],
+    )
+
+    state = store.publish_cycle(
+        [_assessment(_DEVICE, 5, RiskCategory.MEDIUM)],
+        [_report(_DEVICE, "report2")],
+    )
+
+    path, metadata = state.get_report(_DEVICE)
+    assert metadata.report_id == "report1"
+    assert path.name == "report1.pdf"
+
+
+def test_the_hold_survives_many_later_cycles() -> None:
+    store = ApplicationStateStore()
+    store.publish_cycle([_assessment(_DEVICE, 7, RiskCategory.HIGH, isolation=_status())], [])
+
+    for index in range(5):
+        state = store.publish_cycle(
+            [_assessment(_DEVICE, 3, RiskCategory.MEDIUM)], [_report(_DEVICE, f"r{index}")]
+        )
+
+    assert state.get_assessment(_DEVICE).isolation.enforced is True
+
+
+def test_a_later_isolation_record_replaces_the_held_entry() -> None:
+    """A later attempt is newer evidence, so it is published normally."""
+    store = ApplicationStateStore()
+    first = _status()
+    store.publish_cycle([_assessment(_DEVICE, 7, RiskCategory.HIGH, isolation=first)], [])
+
+    later = IsolationStatus(
+        requested=True, enforced=True, backend="linux-iptables", reason="again",
+        requested_at=TS.replace(hour=13), enforcement_capable=True,
+    )
+    newer = _assessment(_DEVICE, 8, RiskCategory.HIGH, isolation=later)
+    state = store.publish_cycle([newer], [_report(_DEVICE, "report2")])
+
+    assert state.get_assessment(_DEVICE) is newer
+    assert state.get_report(_DEVICE)[1].report_id == "report2"
+
+
+def test_a_failed_or_noop_isolation_is_not_held() -> None:
+    """Only an *enforced* isolation is sticky — a NoOp or failed record never
+    claims the device is isolated, so later cycles replace it as before."""
+    for status in (_status(enforced=False, capable=True), _status(enforced=False, capable=False)):
+        store = ApplicationStateStore()
+        store.publish_cycle([_assessment(_DEVICE, 7, RiskCategory.HIGH, isolation=status)], [])
+
+        medium = _assessment(_DEVICE, 5, RiskCategory.MEDIUM)
+        state = store.publish_cycle([medium], [])
+
+        assert state.get_assessment(_DEVICE) is medium
+
+
+def test_holding_one_device_does_not_affect_others() -> None:
+    store = ApplicationStateStore()
+    store.publish_cycle(
+        [
+            _assessment(_DEVICE, 7, RiskCategory.HIGH, isolation=_status()),
+            _assessment("192.168.50.30", 5, RiskCategory.MEDIUM),
+        ],
+        [],
+    )
+
+    other = _assessment("192.168.50.30", 3, RiskCategory.MEDIUM)
+    state = store.publish_cycle(
+        [_assessment(_DEVICE, 5, RiskCategory.MEDIUM), other],
+        [_report("192.168.50.30", "other-report")],
+    )
+
+    assert state.get_assessment("192.168.50.30") is other
+    assert state.get_report("192.168.50.30")[1].report_id == "other-report"
+    assert state.get_assessment(_DEVICE).isolation.enforced is True
+
+
+def test_the_api_serializes_the_held_isolation_as_enforced() -> None:
+    """API shape unchanged: the held entry serializes like any other."""
+    from dashboard.serializers import serialize_device_summary
+
+    store = ApplicationStateStore()
+    store.publish_cycle([_assessment(_DEVICE, 7, RiskCategory.HIGH, isolation=_status())], [])
+    state = store.publish_cycle([_assessment(_DEVICE, 5, RiskCategory.MEDIUM)], [])
+
+    summary = serialize_device_summary(state.get_assessment(_DEVICE), has_report=False)
+    assert summary["isolation"]["enforced"] is True
+    assert summary["isolation"]["status"] == "Enforced"

@@ -54,6 +54,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional, Sequence
 
+from appliance.interface_info import (
+    ApplianceSelfIsolationGuard,
+    interface_index,
+    interface_ipv4_addresses,
+)
 from appliance.output_gate import HardwareOutputGate
 from appliance.worker import (
     DEFAULT_CYCLE_SECONDS,
@@ -61,7 +66,7 @@ from appliance.worker import (
     ApplianceCaptureWorker,
 )
 from capture.network_live_source import DEFAULT_PACKET_LIMIT, NetworkLiveCaptureSource
-from config.constants import APP_NAME, APP_VERSION
+from config.constants import APP_NAME, APP_VERSION, DEFAULT_RISK_ISOLATION_THRESHOLD
 from config.settings import load_settings
 from dashboard import ApplicationStateStore, create_app
 from dashboard.spa import MissingWebBuildError, register_spa, validate_web_build
@@ -96,6 +101,17 @@ from run_pi_live import (  # noqa: E402 - imported for reuse, see comment above
 logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+
+#: The lowest raw QRS that may authorize physical isolation. A configured
+#: threshold below this is refused at startup, never clamped: raw QRS >= 7 is
+#: the project's security rule, and an environment variable or `.env` must
+#: not be able to quietly weaken it.
+MIN_ISOLATION_THRESHOLD = DEFAULT_RISK_ISOLATION_THRESHOLD
+
+#: The highest meaningful isolation threshold: the Quantum Risk Score is capped
+#: at 10 (risk.scoring.quantum_risk_score), so a threshold above 10 could never
+#: be met and would silently disable physical isolation. Refused, never clamped.
+MAX_ISOLATION_THRESHOLD = 10
 
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -205,6 +221,7 @@ def _print_banner(
     protected: str,
     host: str,
     port: int,
+    threshold: int = DEFAULT_RISK_ISOLATION_THRESHOLD,
 ) -> None:
     print("")
     print(f"{APP_NAME} v{APP_VERSION} - appliance mode")
@@ -212,9 +229,12 @@ def _print_banner(
     print(f"Interface:     {interface}")
     print(f"Cycle:         {cycle_seconds:g}s bounded capture cycles, continuous")
     if enforcement == "iptables":
-        print("Enforcement:   IPTABLES - real DROP rules for raw QRS >= threshold")
+        print(f"Enforcement:   IPTABLES - real DROP rules for raw QRS >= {threshold}")
     else:
-        print("Enforcement:   NONE - isolation decisions are recorded, never enforced")
+        print(
+            f"Enforcement:   NONE - isolation decisions (raw QRS >= {threshold}) are "
+            "recorded, never enforced"
+        )
     print(f"Display:       {display_mode}    LEDs: {led_mode}")
     print(f"Protected:     {protected or 'not configured - source-address identity'}")
     print("Decryption:    NONE - no WPA/WPA2/WPA3 decryption, no deauthentication")
@@ -225,7 +245,9 @@ def _print_banner(
     print("")
 
 
-def _build_protected_scope(raw: Optional[str]) -> Optional[ProtectedScope]:
+def _build_protected_scope(
+    raw: Optional[str], extra_excluded: Sequence[str] = ()
+) -> Optional[ProtectedScope]:
     """Build the protected scope, or None when none is configured.
 
     None means legacy behaviour: `run_capture` keeps its historic `src_ip`
@@ -241,12 +263,20 @@ def _build_protected_scope(raw: Optional[str]) -> Optional[ProtectedScope]:
     from the enforcement layer, which already needed exactly this answer to
     refuse isolating the host; discovery there is best-effort, so an empty
     result simply means one fewer exclusion.
+
+    That discovery resolves the hostname, which on a stock Debian image often
+    yields only 127.0.1.1 and misses the lab address. `extra_excluded` carries
+    the capture interface's own IPv4 address(es), read directly from the
+    interface by `main()`, so the appliance's address on the protected network
+    is excluded regardless of how the hostname resolves.
     """
     networks = parse_protected_networks(raw)
     if not networks:
         return None
 
-    scope = ProtectedScope(networks, excluded_addresses=local_ipv4_addresses())
+    scope = ProtectedScope(
+        networks, excluded_addresses=set(local_ipv4_addresses()) | set(extra_excluded)
+    )
     logger.info(
         "Protected-device attribution enabled for %s (excluding this host's own "
         "address(es): %s).",
@@ -254,6 +284,30 @@ def _build_protected_scope(raw: Optional[str]) -> Optional[ProtectedScope]:
         ", ".join(scope.excluded_addresses) or "none discovered",
     )
     return scope
+
+
+def _guard_against_self_isolation(backend, interface_addresses, protected_scope):
+    """Wrap an enforcing backend so it can never isolate the appliance itself
+    (or, with a protected scope, anything outside it).
+
+    The guard reuses `validate_isolation_target` with the union of the
+    hostname-derived addresses and the capture interface's own address(es), so
+    the iptables refusal sees the same self-addresses as the protected scope.
+    A non-enforcing backend (NoOp) is returned unchanged: it can isolate
+    nothing, and leaving it as-is keeps its behaviour byte-for-byte.
+    """
+    if not backend.enforcement_capable:
+        return backend
+    local_addresses = set(local_ipv4_addresses()) | set(interface_addresses)
+    logger.info(
+        "Isolation will refuse this appliance's own address(es): %s.",
+        ", ".join(sorted(local_addresses)) or "none discovered",
+    )
+    return ApplianceSelfIsolationGuard(
+        backend,
+        local_addresses,
+        is_protected=protected_scope.is_protected if protected_scope else None,
+    )
 
 
 def _build_source_factory(
@@ -326,14 +380,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
 
+    # The capture interface's own address: on the AP topology this is the
+    # appliance's address on the protected network (e.g. wlan1's 192.168.50.1).
+    # Read-only; empty off Linux or if the interface has no IPv4 address.
+    interface_addresses = interface_ipv4_addresses(interface)
+
     protected_raw = args.protected_subnet or os.environ.get("CIPHER_PROTECTED_SUBNETS")
     try:
-        protected_scope = _build_protected_scope(protected_raw)
+        protected_scope = _build_protected_scope(protected_raw, interface_addresses)
     except InvalidProtectedScopeError as exc:
         print(f"Invalid protected subnet: {exc}", file=sys.stderr)
         return 2
 
+    if enforcement_mode == "iptables" and protected_scope is None:
+        # Without a scope, identity falls back to RawPacket.src_ip, under which
+        # return traffic makes a remote server the device — and, at raw QRS >= 7,
+        # the iptables target. Real enforcement is therefore never allowed on
+        # that fallback. No subnet is defaulted or inferred.
+        print(
+            "Refusing to start: physical iptables enforcement requires a protected "
+            "subnet/scope. Pass --protected-subnet <CIDR> (for example "
+            "--protected-subnet 192.168.50.0/24) or set CIPHER_PROTECTED_SUBNETS. "
+            "Without it, device identity falls back to the packet source address and "
+            "a remote host could become an isolation target. No subnet is assumed.",
+            file=sys.stderr,
+        )
+        return 2
+
     settings = load_settings()
+    threshold = settings.risk_isolation_threshold
+    if not MIN_ISOLATION_THRESHOLD <= threshold <= MAX_ISOLATION_THRESHOLD:
+        print(
+            f"Refusing to start: the configured isolation threshold is {threshold} "
+            f"(RISK_ISOLATION_THRESHOLD), but it must be between "
+            f"{MIN_ISOLATION_THRESHOLD} and {MAX_ISOLATION_THRESHOLD}. "
+            f"{MIN_ISOLATION_THRESHOLD} is the minimum permitted physical-isolation "
+            f"threshold: only a raw deterministic QRS >= {MIN_ISOLATION_THRESHOLD} may "
+            f"authorize isolation. {MAX_ISOLATION_THRESHOLD} is the maximum, because "
+            f"the QRS is capped at {MAX_ISOLATION_THRESHOLD} and a higher threshold "
+            "could never be met.",
+            file=sys.stderr,
+        )
+        return 2
     configure_logging(settings)
     settings = replace(settings, capture_mode="live", live_interface=interface)
 
@@ -356,6 +444,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ", ".join(protected_scope.networks) if protected_scope else "",
         settings.flask_host,
         settings.flask_port,
+        settings.risk_isolation_threshold,
     )
 
     # Optional output devices, built and started once for the whole run.
@@ -379,7 +468,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _safe_display("LED ready state", indicator.show_ready)
 
     try:
-        isolation_backend = _build_isolation_backend(enforcement_mode)
+        isolation_backend = _guard_against_self_isolation(
+            _build_isolation_backend(enforcement_mode), interface_addresses, protected_scope
+        )
         # Loaded once for the whole run, never per cycle: the detector and
         # the keypair are expensive and entirely reusable.
         anomaly_detector = load_anomaly_detector(settings.model_path)
@@ -427,6 +518,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "device_resolver": protected_scope.resolve if protected_scope else None,
         },
         cycle_seconds=args.cycle_seconds,
+        # Once per cycle, after the dashboard snapshot is published: keep an
+        # enforced isolation on the OLED and LEDs, since per-packet frames are
+        # produced before isolation state exists and would overwrite it.
+        on_cycle_published=lambda state: output_gate.hold_isolated(state.list_assessments()),
+        # Observability only: warn if the capture interface is re-created.
+        interface_index_fn=lambda: interface_index(interface),
     )
 
     _install_signal_handlers(worker.stop_event)
